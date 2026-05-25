@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "midi2mc"
+version = "0.1.4"
+description = "Convert MIDI files into Minecraft Java datapack music shows."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "midi2mc contributors" }]
+keywords = ["minecraft", "midi", "datapack", "music"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Sound/Audio :: MIDI",
+  "Topic :: Games/Entertainment",
+]
+
+dependencies = []
+
+[project.scripts]
+midi2mc = "midi2mc.cli:main"
+
+[tool.setuptools]
+packages = ["midi2mc"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
