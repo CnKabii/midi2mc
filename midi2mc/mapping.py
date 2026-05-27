@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import colorsys
 from .model import NoteEvent
 
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
@@ -163,6 +164,42 @@ def note_particle_color_for_note(
     else:
         normalized = (max(low, min(high, midi_note)) - low) / (high - low)
     return round(0.05 + normalized * 0.90, 4)
+
+
+
+def rgb_for_note(
+    midi_note: int,
+    min_note: int | None = None,
+    max_note: int | None = None,
+) -> tuple[float, float, float]:
+    """Return an RGB color for dust-style particles.
+
+    Low notes lean cyan/blue, middle notes pass through green/yellow, and high
+    notes lean orange/red. This is intentionally related to the note-particle
+    hue mapping, but uses real RGB so lightshow/firework FX can avoid the
+    vanilla note particle sprite.
+    """
+    low = 21 if min_note is None else min_note
+    high = 108 if max_note is None else max_note
+    if high <= low:
+        normalized = 0.5
+    else:
+        normalized = (max(low, min(high, midi_note)) - low) / (high - low)
+    # HSV hue: 0.62 ~= blue, 0.00 ~= red. Keep saturation/value punchy but not neon-white.
+    hue = 0.62 - normalized * 0.62
+    r, g, b = colorsys.hsv_to_rgb(hue, 0.82, 1.0)
+    return (round(r, 3), round(g, 3), round(b, 3))
+
+
+def dust_particle_for_note(
+    midi_note: int,
+    min_note: int | None = None,
+    max_note: int | None = None,
+    scale: float = 1.0,
+) -> str:
+    """Return a Java 1.21.x dust particle id with SNBT color parameters."""
+    r, g, b = rgb_for_note(midi_note, min_note=min_note, max_note=max_note)
+    return f"minecraft:dust{{color:[{r:.3f}f,{g:.3f}f,{b:.3f}f],scale:{scale:.2f}f}}"
 
 
 def lane_for_note(midi_note: int, width: int = 17) -> int:

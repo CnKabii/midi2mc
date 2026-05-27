@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 
 @dataclass(frozen=True)
@@ -62,3 +62,14 @@ class CompiledNote:
     volume: float
     pitch: float
     lane: int
+    sound_engine: str = "vanilla"
+    instrument_key: str = "harp"
+    sound_label: str = "Harp/Piano"
+    stop_tick: int | None = None
+    stop_sound_id: str | None = None
+    used_continuous: bool = False
+    requested_continuous: bool = False
+    resolved_note: int | None = None
+    note_was_clamped: bool = False
+    continuous_conflict: bool = False
+    fallback_reason: str | None = None

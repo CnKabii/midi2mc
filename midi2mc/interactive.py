@@ -7,6 +7,8 @@ from pathlib import Path
 from .export_datapack import DatapackOptions, export_datapack, sanitize_namespace
 from .midi import MidiParseError, parse_midi
 from .recommend import recommend_tick_rate
+from .quality import quality_choice_items, quality_profile
+from .summary import format_midi_summary_lines, warning_lines
 
 
 def _input(prompt: str) -> str:
@@ -18,7 +20,7 @@ def _input(prompt: str) -> str:
 
 def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
     print("=" * 60)
-    print("midi2mc 交互式生成器 / Minecraft Java 1.21.11")
+    print("midi2mc v0.9.0 交互式生成器 / Minecraft Java 1.21.11")
     print("=" * 60)
     print("把 MIDI 编译成数据包 zip，然后放进世界 datapacks 文件夹。\n")
 
@@ -31,7 +33,9 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
     try:
         song = parse_midi(midi_path)
     except MidiParseError as exc:
-        print(f"[midi2mc] MIDI 解析失败: {exc}", file=sys.stderr)
+        print(f"[midi2mc] MIDI 解析失败: {midi_path}", file=sys.stderr)
+        print(f"  原因: {exc}", file=sys.stderr)
+        print("  提示: 确认这是标准 .mid/.midi 文件；当前版本不支持 SMPTE division。", file=sys.stderr)
         return 1
 
     recommendation = recommend_tick_rate(song)
@@ -47,6 +51,12 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
         f"1/16≈{recommendation.sixteenth_ticks:.2f}tick"
     )
 
+    print("\n" + "-" * 60)
+    print("MIDI 摘要预览")
+    print("-" * 60)
+    for line in format_midi_summary_lines(song, recommendation, recommendation.tick_rate, (getattr(args, "max_notes_per_tick", None) or 24) if args else 24):
+        print(line)
+
     default_show_id = sanitize_namespace(midi_path.stem)
     show_id = _ask_text("Show ID / 数据包命名空间", default_show_id)
     show_id = sanitize_namespace(show_id)
@@ -54,14 +64,102 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
     default_out = getattr(args, "out", "output") if args else "output"
     out_dir = Path(_ask_text("输出目录", str(default_out)))
 
-    mode = _ask_choice(
-        "输出模式",
+    preset = _ask_choice(
+        "生成模式",
         [
-            ("command_stage", "伪红石舞台 + 播放声音（推荐）"),
-            ("play", "只播放声音，不生成舞台"),
+            ("vanilla_machine", "原版音符盒音乐机：不需要资源包，带伪红石舞台（推荐）"),
+            ("soma_concert", "Soma 演出舞台：需要 Soma 资源包，生成分层乐器区舞台"),
+            ("soma_play", "Soma 只播放：需要 Soma 资源包，不生成舞台"),
+            ("custom", "高级自定义：手动选择音源和舞台"),
         ],
-        default="command_stage",
+        default="vanilla_machine",
     )
+    stage_profile = "noteblock_machine"
+    if preset == "vanilla_machine":
+        sound_engine = "vanilla"
+        mode = "command_stage"
+        stage_profile = "noteblock_machine"
+    elif preset == "soma_concert":
+        sound_engine = "soma"
+        mode = "command_stage"
+        stage_profile = "soma_concert"
+    elif preset == "soma_play":
+        sound_engine = "soma"
+        mode = "play"
+        stage_profile = "none"
+    else:
+        sound_engine = _ask_choice(
+            "音源引擎",
+            [("vanilla", "原版 note block sounds"), ("soma", "Soma 资源包音源")],
+            default=getattr(args, "sound_engine", "vanilla") if args else "vanilla",
+        )
+        mode = _ask_choice(
+            "输出模式",
+            [
+                ("command_stage", "舞台 + 播放声音"),
+                ("play", "只播放声音，不生成舞台"),
+            ],
+            default="command_stage",
+        )
+        if mode == "command_stage":
+            if sound_engine == "soma":
+                stage_profile = _ask_choice(
+                    "舞台配置",
+                    [
+                        ("soma_concert", "Soma layered concert stage：分层乐器区舞台"),
+                        ("noteblock_machine", "原版音符盒机器风格舞台"),
+                    ],
+                    default="soma_concert",
+                )
+            else:
+                stage_profile = "noteblock_machine"
+        else:
+            stage_profile = "none"
+
+    soma_namespace = getattr(args, "soma_namespace", "") if args else ""
+    soma_map = Path(getattr(args, "soma_map", "")) if args and getattr(args, "soma_map", None) else None
+    soma_reference_note = getattr(args, "soma_reference_note", 60) if args else 60
+    soma_long_note_beats = getattr(args, "soma_long_note_beats", 1.0) if args else 1.0
+    if sound_engine == "soma":
+        print("\n[midi2mc] Soma 音源提示：")
+        print("  - 需要玩家启用包含对应 sound event 的 Soma 资源包。")
+        print("  - v0.9.0 已支持 Soma layered concert stage：drums / bass / piano / guitar / strings / wind / synth / other 八个乐器区。")
+        print("  - 默认使用 Soma v20 表格规则：短音 编号.音高，长音 编号c.音高；长音灯会从下一 tick 亮起，连续长音交接会自然闪断。")
+        print("  - 如果你的 Soma sound event 命名不同，可以之后用命令行 --soma-map 指定 JSON。")
+        soma_namespace = _ask_text("Soma namespace", str(soma_namespace))
+        soma_reference_note = _ask_int("Soma 旋律采样参考音 MIDI note（旧 simple map 用，v20 可直接回车）", int(soma_reference_note), minimum=0, maximum=127)
+        soma_long_note_beats = _ask_float("Soma 长音阈值：多少拍以上使用 c 音色并 stopsound", float(soma_long_note_beats), minimum=0.0)
+
+    default_quality = getattr(args, "quality", "medium") if args else "medium"
+    quality = _ask_choice(
+        "质量档 / 性能预设",
+        quality_choice_items(),
+        default=default_quality,
+    )
+    profile = quality_profile(quality)
+    stage_particles = (not getattr(args, "no_stage_particles", False)) and profile.stage_particles
+    arg_piano_roll = getattr(args, "piano_roll", None) if args else None
+    piano_roll = profile.piano_roll if arg_piano_roll is None else bool(arg_piano_roll)
+    if mode != "command_stage":
+        piano_roll = False
+    print(f"[midi2mc] 质量档：{profile.label}")
+    print(f"          默认同 tick 复音上限：{profile.max_notes_per_tick}；舞台粒子：{'开启' if stage_particles else '关闭'}；Piano Roll：{'开启' if piano_roll else '关闭'}")
+    show_fx = getattr(args, "show_fx", "auto") if args else "auto"
+    if mode == "command_stage":
+        piano_roll = _ask_yes_no("是否启用 Piano Roll / 舞台前方粒子光带？", default=piano_roll)
+        show_fx = _ask_choice(
+            "Show FX / 额外灯光烟花效果",
+            [
+                ("auto", "自动：Soma 演出舞台默认 lightshow，low 档关闭"),
+                ("none", "关闭额外效果，只保留基础舞台反馈"),
+                ("lightshow", "轻量灯光：每个音符生成彩色 dust 灯光"),
+                ("fireworks", "彩色 dust 烟花风格粒子：只在重音/长音触发，不召唤真实烟花实体"),
+                ("both", "lightshow + 烟花风格粒子"),
+            ],
+            default=str(show_fx or "auto"),
+        )
+    else:
+        show_fx = "none"
 
     arg_tick_rate = str(getattr(args, "tick_rate", "auto") if args else "auto").strip().lower()
     default_tick_rate = recommendation.tick_rate if arg_tick_rate in {"", "auto", "a"} else _safe_int(arg_tick_rate, recommendation.tick_rate)
@@ -78,12 +176,18 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
         print("[midi2mc] 选择 20 TPS：保持原版速度，不需要额外 /tick rate。")
 
     gain = _ask_float("音量倍率", getattr(args, "gain", 1.0) if args else 1.0, minimum=0.0)
+    default_max_notes = (getattr(args, "max_notes_per_tick", None) if args else None) or profile.max_notes_per_tick
     max_notes = _ask_int(
         "同一 tick 最大复音数（防止超密 MIDI 刷爆命令）",
-        getattr(args, "max_notes_per_tick", 24) if args else 24,
+        default_max_notes,
         minimum=1,
         maximum=256,
     )
+    warnings = warning_lines(song, tick_rate, max_notes)
+    if warnings:
+        print("\n[midi2mc] 生成前风险提示：")
+        for line in warnings:
+            print(f"  - {line}")
     zip_output = _ask_yes_no("是否同时生成 .zip 数据包？", default=True)
 
     options = DatapackOptions(
@@ -93,7 +197,17 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
         tick_rate=tick_rate,
         mode=mode,
         gain=gain,
+        sound_engine=sound_engine,
+        stage_profile=stage_profile if stage_profile != "none" else "noteblock_machine",
+        soma_namespace=soma_namespace,
+        soma_map=soma_map,
+        soma_reference_note=soma_reference_note,
+        soma_long_note_beats=soma_long_note_beats,
+        quality=quality,
         max_notes_per_tick=max_notes,
+        stage_particles=stage_particles,
+        piano_roll=piano_roll,
+        show_fx=show_fx,
         zip_output=zip_output,
         minecraft_1_21_layout=not getattr(args, "legacy_1_20", False) if args else True,
     )
@@ -102,11 +216,22 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
     print("\n[midi2mc] 生成完成！")
     print(f"  目标版本: Minecraft Java 1.21.11")
     print(f"  Show ID: {result.namespace}")
+    print(f"  音源引擎: {sound_engine}")
+    print(f"  输出模式: {mode}")
+    print(f"  质量档: {quality}")
+    print(f"  舞台粒子: {'开启' if stage_particles else '关闭'}")
+    print(f"  Piano Roll: {'开启' if piano_roll else '关闭'}")
+    print(f"  Show FX: {show_fx}")
     print(f"  音符: {song.note_count} parsed / {result.compiled_note_count} compiled")
     print(f"  时长: {song.duration_sec:.2f}s / {result.total_ticks} ticks @ {tick_rate} TPS")
     print(f"  数据包文件夹: {result.pack_dir}")
     if result.zip_path:
         print(f"  数据包 zip: {result.zip_path}")
+    print(f"  说明文件: {result.pack_dir.parent / (result.namespace + '_HOW_TO_PLAY.txt')}")
+
+    print("\n最终 MIDI 摘要：")
+    for line in format_midi_summary_lines(song, recommendation, tick_rate, max_notes):
+        print(line)
 
     print("\n游戏内使用：")
     print("  /reload")
