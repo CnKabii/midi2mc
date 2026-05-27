@@ -172,24 +172,21 @@ def rgb_for_note(
     min_note: int | None = None,
     max_note: int | None = None,
 ) -> tuple[float, float, float]:
-    """Return an RGB color for dust-style particles.
+    """Return RGB matching Minecraft's note-particle hue as closely as possible.
 
-    Low notes lean cyan/blue, middle notes pass through green/yellow, and high
-    notes lean orange/red. This is intentionally related to the note-particle
-    hue mapping, but uses real RGB so lightshow/firework FX can avoid the
-    vanilla note particle sprite.
+    The stage still uses vanilla note particles for the tiny note sprite. Dust FX
+    should feel like the same color family rather than a separate blue-to-red
+    gradient, so v0.10 derives RGB from the same note color parameter and the
+    classic Minecraft note-particle sine palette.
     """
-    low = 21 if min_note is None else min_note
-    high = 108 if max_note is None else max_note
-    if high <= low:
-        normalized = 0.5
-    else:
-        normalized = (max(low, min(high, midi_note)) - low) / (high - low)
-    # HSV hue: 0.62 ~= blue, 0.00 ~= red. Keep saturation/value punchy but not neon-white.
-    hue = 0.62 - normalized * 0.62
-    r, g, b = colorsys.hsv_to_rgb(hue, 0.82, 1.0)
+    hue = note_particle_color_for_note(midi_note, min_note=min_note, max_note=max_note)
+    # Minecraft note particles use a cyclic sine palette. This approximation
+    # makes dust FX visually line up with the note particles that sit above it.
+    tau = math.tau
+    r = max(0.0, math.sin((hue + 0.0) * tau) * 0.65 + 0.35)
+    g = max(0.0, math.sin((hue + 1.0 / 3.0) * tau) * 0.65 + 0.35)
+    b = max(0.0, math.sin((hue + 2.0 / 3.0) * tau) * 0.65 + 0.35)
     return (round(r, 3), round(g, 3), round(b, 3))
-
 
 def dust_particle_for_note(
     midi_note: int,

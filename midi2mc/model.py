@@ -73,3 +73,7 @@ class CompiledNote:
     note_was_clamped: bool = False
     continuous_conflict: bool = False
     fallback_reason: str | None = None
+    fallback_program: int | None = None
+    drum_variant: str | None = None
+    mapping_category: str | None = None
+    soma_class: str | None = None

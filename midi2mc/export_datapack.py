@@ -12,7 +12,19 @@ from typing import Any, Dict, Iterable, List
 
 from .mapping import lane_for_note
 from .engines import SoundEngineOptions, build_sound_engine
-from .stages.noteblock_machine import stage_note_lines as noteblock_stage_note_lines, noteblock_setup_lines, noteblock_clear_lines, noteblock_stage_usage_report
+from .stages.noteblock_machine import (
+    stage_note_lines as noteblock_stage_note_lines,
+    noteblock_setup_lines,
+    noteblock_clear_lines,
+    noteblock_meter_lines,
+    noteblock_pulse_clear_lines,
+    noteblock_stage_usage_report,
+    pulse_hold_ticks_for,
+    resolve_noteblock_layout,
+    resolve_beat_info,
+    NoteblockLayout,
+    BeatInfo,
+)
 from .stages.soma_concert import (
     soma_concert_clear_lines,
     soma_concert_note_lines,
@@ -25,8 +37,10 @@ from .model import CompiledNote, MidiSong, NoteEvent
 from .recommend import recommend_tick_rate
 from .quality import quality_profile
 from .stages.piano_roll import piano_roll_note_lines, piano_roll_usage_report
-from .stages.show_fx import resolve_show_fx, show_fx_note_lines, show_fx_usage_report
+from .stages.show_fx import resolve_show_fx, show_fx_note_lines, show_fx_tick_lines, show_fx_usage_report
 from .summary import build_song_stats, format_midi_summary_text, warning_lines
+from .safety import analyze_safety, format_safety_report
+from .report import write_html_report
 
 
 @dataclass(frozen=True)
@@ -44,15 +58,20 @@ class DatapackOptions:
     gain: float = 1.0
     sound_engine: str = "vanilla"  # vanilla | soma
     stage_profile: str = "auto"  # auto | noteblock_machine | soma_concert
+    stage_layout: str = "auto"  # vanilla noteblock layout: auto | compact | wide | huge
     soma_namespace: str = ""
     soma_map: Path | None = None
     soma_reference_note: int = 60
     soma_long_note_beats: float = 1.0
+    soma_drum_kit: str = "auto"
     quality: str = "medium"
+    safe_mode: bool = False
     max_notes_per_tick: int = 24
     stage_particles: bool = True
     piano_roll: bool | None = None
     show_fx: str = "auto"  # auto | none | lightshow | fireworks | both
+    preset: str | None = None
+    html_report: bool = True
     zip_output: bool = True
     minecraft_1_21_layout: bool = True
 
@@ -88,15 +107,20 @@ def _normalize_stage_options(options: DatapackOptions) -> DatapackOptions:
         gain=options.gain,
         sound_engine=options.sound_engine,
         stage_profile=profile,
+        stage_layout=options.stage_layout,
         soma_namespace=options.soma_namespace,
         soma_map=options.soma_map,
         soma_reference_note=options.soma_reference_note,
         soma_long_note_beats=options.soma_long_note_beats,
+        soma_drum_kit=options.soma_drum_kit,
         quality=options.quality,
+        safe_mode=options.safe_mode,
         max_notes_per_tick=options.max_notes_per_tick,
         stage_particles=options.stage_particles,
         piano_roll=options.piano_roll,
         show_fx=options.show_fx,
+        preset=options.preset,
+        html_report=options.html_report,
         zip_output=options.zip_output,
         minecraft_1_21_layout=options.minecraft_1_21_layout,
     )
@@ -123,23 +147,32 @@ def export_datapack(song: MidiSong, options: DatapackOptions) -> DatapackResult:
     compiled = compile_notes(song.notes, options, ticks_per_quarter=song.ticks_per_quarter)
     by_tick: Dict[int, List[CompiledNote]] = defaultdict(list)
     stop_by_tick: Dict[int, List[CompiledNote]] = defaultdict(list)
+    pulse_clear_by_tick: Dict[int, List[CompiledNote]] = defaultdict(list)
     for note in compiled:
         by_tick[note.mc_tick].append(note)
         if note.stop_tick is not None and note.stop_sound_id:
             stop_by_tick[note.stop_tick].append(note)
+
+    if options.mode == "command_stage" and options.stage_profile == "noteblock_machine":
+        for note in compiled:
+            pulse_clear_by_tick[note.mc_tick + pulse_hold_ticks_for(note, options.tick_rate)].append(note)
 
     total_ticks = max(1, math.ceil(song.duration_sec * options.tick_rate) + 2)
 
     _write_pack_mcmeta(root, options, namespace)
     _write_tags(tags_dir, namespace)
     _write_control_functions(ns_function_dir, namespace, options, total_ticks)
-    _write_dispatch_functions(dispatch_dir, by_tick, namespace, total_ticks, stop_by_tick)
-    _write_event_functions(events_dir, by_tick, options, stop_by_tick)
+    _write_dispatch_functions(dispatch_dir, by_tick, namespace, total_ticks, stop_by_tick, pulse_clear_by_tick)
+    noteblock_layout = resolve_noteblock_layout(compiled, options.stage_layout) if options.stage_profile == "noteblock_machine" else None
+    _write_event_functions(events_dir, by_tick, options, stop_by_tick, noteblock_layout, pulse_clear_by_tick, ticks_per_quarter=song.ticks_per_quarter)
     if options.mode == "command_stage":
-        _write_stage_functions(stage_dir, ns_function_dir, namespace, options.stage_profile)
+        beat_info = resolve_beat_info(song, options.tick_rate) if options.stage_profile == "noteblock_machine" else None
+        _write_stage_functions(stage_dir, ns_function_dir, namespace, options.stage_profile, noteblock_layout, beat_info)
     _write_readme(root, namespace, options, song, total_ticks, compiled)
     _write_external_readme(options.out_dir, namespace, root / "README.txt")
-    _write_manifest(root, namespace, options, song, total_ticks, compiled)
+    manifest = _write_manifest(root, namespace, options, song, total_ticks, compiled)
+    if options.html_report:
+        write_html_report(root, namespace=namespace, options=options, song=song, total_ticks=total_ticks, compiled=compiled, manifest=manifest)
 
     zip_path = None
     if options.zip_output:
@@ -173,6 +206,7 @@ def compile_notes(notes: Iterable[NoteEvent], options: DatapackOptions, ticks_pe
             soma_map=options.soma_map,
             soma_reference_note=options.soma_reference_note,
             soma_long_note_beats=options.soma_long_note_beats,
+            soma_drum_kit=options.soma_drum_kit,
             ticks_per_quarter=ticks_per_quarter,
         )
     )
@@ -227,6 +261,10 @@ def compile_notes(notes: Iterable[NoteEvent], options: DatapackOptions, ticks_pe
                     note_was_clamped=sound.note_was_clamped,
                     continuous_conflict=continuous_conflict,
                     fallback_reason=sound.fallback_reason,
+                    fallback_program=sound.fallback_program,
+                    drum_variant=sound.drum_variant,
+                    mapping_category=sound.mapping_category,
+                    soma_class=sound.soma_class,
                 )
             )
     compiled.sort(key=lambda n: (n.mc_tick, n.note.track_index, n.note.channel, n.note.note))
@@ -260,7 +298,7 @@ def _show_fx_enabled(options: DatapackOptions) -> str:
 
 def _write_pack_mcmeta(root: Path, options: DatapackOptions, namespace: str) -> None:
     pack: dict[str, object] = {
-        "description": f"midi2mc v0.9.0 datapack for Minecraft Java 1.21.11: {namespace}",
+        "description": f"midi2mc v1.9.0 datapack for Minecraft Java 1.21.11: {namespace}",
     }
     if options.pack_format is not None:
         pack["pack_format"] = options.pack_format
@@ -300,10 +338,19 @@ def _write_control_functions(
         "execute if score $playing midi2mc matches 1 run scoreboard players add $time midi2mc 1",
     ]
     if options.mode == "command_stage":
-        tick_lines.append(
-            "execute if score $playing midi2mc matches 1 run function "
-            f"{namespace}:stage/clear"
-        )
+        if options.stage_profile == "noteblock_machine":
+            # Pulse Stage keeps note modules visible for a few ticks, so do
+            # not wipe the whole stage every tick. Beat meter is the only
+            # continuous vanilla stage update.
+            tick_lines.append(
+                "execute if score $playing midi2mc matches 1 run function "
+                f"{namespace}:stage/meter"
+            )
+        else:
+            tick_lines.append(
+                "execute if score $playing midi2mc matches 1 run function "
+                f"{namespace}:stage/clear"
+            )
     tick_lines.extend(
         [
             f"execute if score $playing midi2mc matches 1 run function {namespace}:dispatch/root",
@@ -371,8 +418,9 @@ def _write_dispatch_functions(
     namespace: str,
     total_ticks: int,
     stop_by_tick: Dict[int, List[CompiledNote]] | None = None,
+    pulse_clear_by_tick: Dict[int, List[CompiledNote]] | None = None,
 ) -> None:
-    active_ticks = sorted(set(by_tick) | set(stop_by_tick or {}))
+    active_ticks = sorted(set(by_tick) | set(stop_by_tick or {}) | set(pulse_clear_by_tick or {}))
     chunk_size = 100
     chunks: Dict[int, List[int]] = defaultdict(list)
     for tick in active_ticks:
@@ -399,16 +447,27 @@ def _write_dispatch_functions(
         _write_function(dispatch_dir / f"{chunk:04d}.mcfunction", lines)
 
 
-def _write_event_functions(events_dir: Path, by_tick: Dict[int, List[CompiledNote]], options: DatapackOptions, stop_by_tick: Dict[int, List[CompiledNote]] | None = None) -> None:
+def _write_event_functions(events_dir: Path, by_tick: Dict[int, List[CompiledNote]], options: DatapackOptions, stop_by_tick: Dict[int, List[CompiledNote]] | None = None, noteblock_layout: NoteblockLayout | None = None, pulse_clear_by_tick: Dict[int, List[CompiledNote]] | None = None, ticks_per_quarter: int = 480) -> None:
     namespace = sanitize_namespace(options.show_id)
     note_values = [compiled.note.note for notes in by_tick.values() for compiled in notes]
     min_note = min(note_values) if note_values else 21
     max_note = max(note_values) if note_values else 108
-    all_ticks = sorted(set(by_tick) | set(stop_by_tick or {}))
+    all_ticks = sorted(set(by_tick) | set(stop_by_tick or {}) | set(pulse_clear_by_tick or {}))
     for tick in all_ticks:
         notes = by_tick.get(tick, [])
         stops = (stop_by_tick or {}).get(tick, [])
+        pulse_clears = (pulse_clear_by_tick or {}).get(tick, [])
         lines: List[str] = []
+        # v1.9 Pulse Stage: clear expired vanilla note-block modules before
+        # drawing new notes on this same tick. This keeps pulses readable without
+        # accumulating into a carpet.
+        if options.mode == "command_stage" and options.stage_profile == "noteblock_machine":
+            for compiled in pulse_clears:
+                lines.extend(noteblock_pulse_clear_lines(compiled, namespace, noteblock_layout))
+        if notes and options.mode == "command_stage":
+            fx_profile = _show_fx_enabled(options)
+            if fx_profile != "none":
+                lines.extend(show_fx_tick_lines(notes, namespace, min_note, max_note, options.stage_profile, fx_profile, noteblock_layout, ticks_per_quarter=ticks_per_quarter))
         for compiled in stops:
             if compiled.stop_sound_id:
                 category = "voice" if compiled.sound_engine == "soma" else "master"
@@ -425,43 +484,50 @@ def _write_event_functions(events_dir: Path, by_tick: Dict[int, List[CompiledNot
                 f"{compiled.sound_id} {category} @s ~ ~ ~ {compiled.volume:g} {compiled.pitch:g}"
             )
             if options.mode == "command_stage":
-                lines.extend(_stage_note_lines(compiled, namespace, min_note, max_note, options.stage_profile, options.stage_particles))
+                lines.extend(_stage_note_lines(compiled, namespace, min_note, max_note, options.stage_profile, options.stage_particles, noteblock_layout))
                 if _piano_roll_enabled(options):
                     lines.extend(piano_roll_note_lines(compiled, namespace, min_note, max_note))
                 fx_profile = _show_fx_enabled(options)
                 if fx_profile != "none":
-                    lines.extend(show_fx_note_lines(compiled, namespace, min_note, max_note, options.stage_profile, fx_profile))
+                    lines.extend(show_fx_note_lines(compiled, namespace, min_note, max_note, options.stage_profile, fx_profile, noteblock_layout))
         _write_function(events_dir / f"{tick:06d}.mcfunction", lines)
 
 
-def _write_stage_functions(stage_dir: Path, fn_dir: Path, namespace: str, stage_profile: str) -> None:
-    _write_function(stage_dir / "setup.mcfunction", _stage_setup_lines(namespace, stage_profile))
-    _write_function(stage_dir / "clear.mcfunction", _stage_clear_lines(namespace, stage_profile))
-    _write_function(stage_dir / "reset.mcfunction", _stage_reset_lines(namespace, stage_profile))
+def _write_stage_functions(stage_dir: Path, fn_dir: Path, namespace: str, stage_profile: str, noteblock_layout: NoteblockLayout | None = None, beat_info: BeatInfo | None = None) -> None:
+    _write_function(stage_dir / "setup.mcfunction", _stage_setup_lines(namespace, stage_profile, noteblock_layout))
+    _write_function(stage_dir / "clear.mcfunction", _stage_clear_lines(namespace, stage_profile, noteblock_layout))
+    _write_function(stage_dir / "reset.mcfunction", _stage_reset_lines(namespace, stage_profile, noteblock_layout))
+    _write_function(stage_dir / "meter.mcfunction", _stage_meter_lines(namespace, stage_profile, noteblock_layout, beat_info))
 
 
-def _stage_setup_lines(namespace: str, stage_profile: str) -> list[str]:
+def _stage_setup_lines(namespace: str, stage_profile: str, noteblock_layout: NoteblockLayout | None = None) -> list[str]:
     if stage_profile == "soma_concert":
         return soma_concert_setup_lines(namespace)
-    return noteblock_setup_lines(namespace)
+    return noteblock_setup_lines(namespace, noteblock_layout)
 
 
-def _stage_clear_lines(namespace: str, stage_profile: str) -> list[str]:
+def _stage_clear_lines(namespace: str, stage_profile: str, noteblock_layout: NoteblockLayout | None = None) -> list[str]:
     if stage_profile == "soma_concert":
         return soma_concert_clear_lines(namespace)
-    return noteblock_clear_lines(namespace)
+    return noteblock_clear_lines(namespace, noteblock_layout)
 
 
-def _stage_reset_lines(namespace: str, stage_profile: str) -> list[str]:
+def _stage_reset_lines(namespace: str, stage_profile: str, noteblock_layout: NoteblockLayout | None = None) -> list[str]:
     if stage_profile == "soma_concert":
         return soma_concert_reset_lines(namespace)
-    return noteblock_clear_lines(namespace)
+    return noteblock_clear_lines(namespace, noteblock_layout)
 
 
-def _stage_note_lines(compiled: CompiledNote, namespace: str, min_note: int, max_note: int, stage_profile: str, stage_particles: bool) -> list[str]:
+def _stage_meter_lines(namespace: str, stage_profile: str, noteblock_layout: NoteblockLayout | None = None, beat_info: BeatInfo | None = None) -> list[str]:
+    if stage_profile == "noteblock_machine":
+        return noteblock_meter_lines(namespace, noteblock_layout, beat_info)
+    return ["# no beat/bar meter for this stage profile"]
+
+
+def _stage_note_lines(compiled: CompiledNote, namespace: str, min_note: int, max_note: int, stage_profile: str, stage_particles: bool, noteblock_layout: NoteblockLayout | None = None) -> list[str]:
     if stage_profile == "soma_concert":
         return soma_concert_note_lines(compiled, namespace, min_note, max_note, stage_particles=stage_particles)
-    return noteblock_stage_note_lines(compiled, namespace, min_note, max_note, stage_particles=stage_particles)
+    return noteblock_stage_note_lines(compiled, namespace, min_note, max_note, stage_particles=stage_particles, layout=noteblock_layout)
 
 
 def _stage_stop_lines(compiled: CompiledNote, namespace: str, stage_profile: str) -> list[str]:
@@ -487,14 +553,15 @@ def _write_readme(root: Path, namespace: str, options: DatapackOptions, song: Mi
     )
     warnings_text = "\n".join(f"- {line}" for line in warnings) if warnings else "- 未检测到明显风险。"
     summary_text = format_midi_summary_text(song, recommendation, options.tick_rate, options.max_notes_per_tick)
-    engine = build_sound_engine(SoundEngineOptions(name=options.sound_engine, gain=options.gain, soma_namespace=options.soma_namespace, soma_map=options.soma_map, soma_reference_note=options.soma_reference_note, soma_long_note_beats=options.soma_long_note_beats, ticks_per_quarter=song.ticks_per_quarter))
+    engine = build_sound_engine(SoundEngineOptions(name=options.sound_engine, gain=options.gain, soma_namespace=options.soma_namespace, soma_map=options.soma_map, soma_reference_note=options.soma_reference_note, soma_long_note_beats=options.soma_long_note_beats, soma_drum_kit=options.soma_drum_kit, ticks_per_quarter=song.ticks_per_quarter))
     engine_text = "\n".join(f"- {line}" for line in engine.readme_notes())
     soma_report_text = _format_soma_report(_soma_usage_report(compiled))
+    beat_info = resolve_beat_info(song, options.tick_rate)
 
-    text = f"""midi2mc v0.9.0 数据包说明：{namespace}
+    text = f"""midi2mc v1.9.0 数据包说明：{namespace}
 
 这是一个由 midi2mc 自动生成的 Minecraft Java 1.21.11 MIDI 音乐数据包。
-当前版本目标是：小工具 + 数据包 + 质量档/性能保护 + 轻量灯光/烟花风格粒子效果。
+当前版本目标是：原版优先的小工具 + 数据包；v1.9 合并了 preset 系统、HTML 报告和兼容/安全整理。原版 Pulse Stage 保持干净骨架，音符盒/底座/灯在发音时短暂保持数 tick 后自动消散；舞台保留 4/4 节拍灯，但去掉 actionbar Bar/Beat 文字和移动播放头，减少视觉干扰。Soma 作为高级音源模式保留。
 
 ====================
 最快使用步骤
@@ -530,7 +597,10 @@ def _write_readme(root: Path, namespace: str, options: DatapackOptions, song: Mi
 - 输出模式: {options.mode}
 - 音源引擎: {options.sound_engine}
 - 舞台配置: {_effective_stage_profile(options)}
+- 原版舞台布局: {options.stage_layout}
+- Preset: {options.preset or "none"}
 - 质量档: {options.quality}
+- Safe Mode: {"开启" if options.safe_mode else "关闭"}
 - 舞台粒子: {"开启" if options.stage_particles else "关闭"}
 - Piano Roll 粒子光带: {"开启" if _piano_roll_enabled(options) else "关闭"}
 - Show FX / 灯光烟花效果: {_show_fx_enabled(options)}
@@ -539,9 +609,12 @@ def _write_readme(root: Path, namespace: str, options: DatapackOptions, song: Mi
 - 编译 TPS: {options.tick_rate}
 - 建议 tick 指令: {tick_command}
 - 最大同 tick 复音数: {options.max_notes_per_tick}
+- v1.9 原版舞台: Pulse Stage 稀疏骨架 + 短暂保持的音符盒脉冲模块 + 小型视觉控制台 + 4/4 节拍灯；已移除移动播放头和 actionbar Bar/Beat 文字
+- v1.9 节拍表: 主 BPM {beat_info.primary_bpm:.2f}，估算 1 拍 {beat_info.beat_ticks} tick，1 小节 {beat_info.bar_ticks} tick，按 4/4 显示
 - 原始音符数: {song.note_count}
 - 编译后音符数: {sum(min(len(group), options.max_notes_per_tick) for group in _notes_grouped_by_tick(song.notes, options.tick_rate).values())}
 - Minecraft 总 tick: {total_ticks}
+- HTML 报告: report.html
 - 预计时长: {stats.duration_text} ({song.duration_sec:.2f}s)
 
 ====================
@@ -553,6 +626,11 @@ def _write_readme(root: Path, namespace: str, options: DatapackOptions, song: Mi
 Soma 使用报告
 ====================
 {soma_report_text}
+
+====================
+大型 MIDI 安全评估
+====================
+{format_safety_report(analyze_safety(song, tick_rate=options.tick_rate, max_notes_per_tick=options.max_notes_per_tick, quality=options.quality, mode=options.mode, sound_engine=options.sound_engine, stage_profile=_effective_stage_profile(options), show_fx=_show_fx_enabled(options), piano_roll=_piano_roll_enabled(options)))}
 
 ====================
 风险提示 / 调试提示
@@ -585,7 +663,7 @@ command_stage 是“伪红石音乐”舞台，不是真红石电路。
 - note 粒子：按音高变化颜色。
 
 当前限制：
-- v0.8 已支持质量档：low / medium / high / insane。Piano Roll 默认关闭，可手动开启。Show FX 支持 none / lightshow / fireworks / both；v0.9.0 起 lightshow/fireworks 使用可染色 minecraft:dust 粒子，不再用 note/end_rod 作为主体；fireworks 是彩色粒子爆发，不召唤真实烟花实体。原版/Soma 舞台都使用更宽的分组布局，特效会跟随对应 lane / 乐器模块触发。Soma 长音灯光会从下一 tick 持续亮起，连续长音交接时会自然闪断一下。
+- v0.8 已支持质量档：low / medium / high / insane。Piano Roll 默认关闭，可手动开启。Show FX 支持 none / lightshow / fireworks / both；v1.3 起 lightshow/fireworks 使用与 note 颜色匹配的 minecraft:dust 粒子；v1.9 的原版 Pulse Stage 会让音符盒脉冲模块短暂保持后自动清理，并保留 Beat Meter 节拍灯；Bar/Beat actionbar 与移动播放头已去除；fireworks 是彩色粒子爆发，不召唤真实烟花实体。v0.10 支持 .m2mc.json 项目配置文件，可复用生成设置；v0.11 增加 --safe-mode、大型 MIDI 风险评估、更多示例项目和 FAQ；v0.12 增强 Soma 映射，支持 GM 121-128 fallback、0/0e/0p 鼓组变体和更详细的映射报告。Soma 长音灯光会从下一 tick 持续亮起，连续长音交接时会自然闪断一下。
 - Soma 默认 sound event 使用 v20 表格规则：<编号>.<音高>，长音使用 <编号>c.<音高> 并自动 stopsound。Soma concert stage 会按 drums / bass / piano / guitar / strings / wind / synth / other 分区闪灯；长音 c 会保持对应区域常亮直到 note off。
 - 暂时忽略 sustain pedal、pitch bend、expression 等高级 MIDI 控制。
 - 数据包不会自动执行 /tick rate；这个命令需要玩家/管理员自己执行。
@@ -617,11 +695,15 @@ def _write_manifest(
     song: MidiSong,
     total_ticks: int,
     compiled: List[CompiledNote],
-) -> None:
+) -> dict[str, object]:
     recommendation = recommend_tick_rate(song)
     stats = build_song_stats(song, tick_rate=options.tick_rate, max_notes_per_tick=options.max_notes_per_tick)
     data = {
-        "format": "midi2mc.show.v0.9.0",
+        "format": "midi2mc.show.v1.9.0",
+        "project_config_support": ".m2mc.json",
+        "preset": options.preset,
+        "report_html": bool(options.html_report),
+        "documentation_version": "v1.9.0",
         "namespace": namespace,
         "target_minecraft": "Java 1.21.11",
         "pack_format": options.pack_format,
@@ -633,7 +715,8 @@ def _write_manifest(
         "mode": options.mode,
         "sound_engine": options.sound_engine,
         "stage_profile": _effective_stage_profile(options),
-        "engine": build_sound_engine(SoundEngineOptions(name=options.sound_engine, gain=options.gain, soma_namespace=options.soma_namespace, soma_map=options.soma_map, soma_reference_note=options.soma_reference_note, soma_long_note_beats=options.soma_long_note_beats, ticks_per_quarter=song.ticks_per_quarter)).manifest(),
+        "stage_layout": options.stage_layout,
+        "engine": build_sound_engine(SoundEngineOptions(name=options.sound_engine, gain=options.gain, soma_namespace=options.soma_namespace, soma_map=options.soma_map, soma_reference_note=options.soma_reference_note, soma_long_note_beats=options.soma_long_note_beats, soma_drum_kit=options.soma_drum_kit, ticks_per_quarter=song.ticks_per_quarter)).manifest(),
         "duration_seconds": round(song.duration_sec, 3),
         "duration_text": stats.duration_text,
         "duration_ticks": total_ticks,
@@ -642,6 +725,7 @@ def _write_manifest(
         "dropped_notes_due_to_cap": stats.dropped_note_count,
         "max_polyphony_raw": stats.max_polyphony_raw,
         "quality": options.quality,
+        "safe_mode": options.safe_mode,
         "quality_profile": quality_profile(options.quality).__dict__,
         "max_notes_per_tick": options.max_notes_per_tick,
         "stage_particles": options.stage_particles,
@@ -655,19 +739,35 @@ def _write_manifest(
         "track_names": song.track_names,
         "top_instruments": stats.top_instruments,
         "soma_report": _soma_usage_report(compiled),
-        "stage_report": _stage_usage_report(compiled, options.stage_profile),
+        "stage_report": _stage_usage_report(compiled, options.stage_profile, options.stage_layout),
         "visualizer_report": piano_roll_usage_report(compiled, _piano_roll_enabled(options) and options.mode == "command_stage"),
         "show_fx_report": show_fx_usage_report(compiled, _show_fx_enabled(options), _effective_stage_profile(options)),
+        "beat_report": _beat_usage_report(song, options),
         "arrangement_report": _arrangement_report(compiled),
+        "safety_report": analyze_safety(song, tick_rate=options.tick_rate, max_notes_per_tick=options.max_notes_per_tick, quality=options.quality, mode=options.mode, sound_engine=options.sound_engine, stage_profile=_effective_stage_profile(options), show_fx=_show_fx_enabled(options), piano_roll=_piano_roll_enabled(options)).manifest(),
         "warnings": warning_lines(song, options.tick_rate, options.max_notes_per_tick),
     }
     (root / "midi2mc_manifest.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+    return data
 
 
-def _stage_usage_report(compiled: List[CompiledNote], stage_profile: str) -> dict[str, object]:
+def _beat_usage_report(song: MidiSong, options: DatapackOptions) -> dict[str, object]:
+    info = resolve_beat_info(song, options.tick_rate)
+    return {
+        "enabled": options.mode == "command_stage" and _effective_stage_profile(options) == "noteblock_machine",
+        "primary_bpm": round(info.primary_bpm, 3),
+        "beat_ticks": info.beat_ticks,
+        "bar_ticks": info.bar_ticks,
+        "beats_per_bar": info.beats_per_bar,
+        "policy": info.policy,
+        "ui": "vanilla stage beat lamps only; actionbar Bar/Beat text removed in v1.9",
+    }
+
+
+def _stage_usage_report(compiled: List[CompiledNote], stage_profile: str, stage_layout: str = "auto") -> dict[str, object]:
     if stage_profile == "soma_concert":
         return soma_stage_usage_report(compiled)
-    return noteblock_stage_usage_report(compiled) if stage_profile == "noteblock_machine" else {"profile": stage_profile, "enabled": stage_profile != "none"}
+    return noteblock_stage_usage_report(compiled, stage_layout) if stage_profile == "noteblock_machine" else {"profile": stage_profile, "enabled": stage_profile != "none"}
 
 
 def _soma_usage_report(compiled: List[CompiledNote]) -> dict[str, object]:
@@ -678,9 +778,33 @@ def _soma_usage_report(compiled: List[CompiledNote]) -> dict[str, object]:
     unique_stop_sounds = sorted({note.stop_sound_id for note in soma_notes if note.stop_sound_id})
     program_counts: Dict[str, int] = defaultdict(int)
     label_counts: Dict[str, int] = defaultdict(int)
+    category_counts: Dict[str, int] = defaultdict(int)
+    class_counts: Dict[str, int] = defaultdict(int)
+    drum_variant_counts: Dict[str, int] = defaultdict(int)
+    fallback_program_counts: Dict[str, int] = defaultdict(int)
+    fallback_examples = []
     for note in soma_notes:
         program_counts[str(note.note.program + 1)] += 1
         label_counts[note.sound_label] += 1
+        if note.mapping_category:
+            category_counts[note.mapping_category] += 1
+        if note.soma_class:
+            class_counts[note.soma_class] += 1
+        if note.drum_variant:
+            drum_variant_counts[note.drum_variant] += 1
+        if note.fallback_program is not None:
+            key = f"GM {note.note.program + 1} -> Soma program {note.fallback_program + 1}"
+            fallback_program_counts[key] += 1
+            if len(fallback_examples) < 12:
+                fallback_examples.append(
+                    {
+                        "tick": note.mc_tick,
+                        "from_program": note.note.program + 1,
+                        "to_program": note.fallback_program + 1,
+                        "sound": note.sound_id,
+                        "reason": note.fallback_reason,
+                    }
+                )
     clamped_examples = []
     for note in soma_notes:
         if note.note_was_clamped:
@@ -695,6 +819,8 @@ def _soma_usage_report(compiled: List[CompiledNote]) -> dict[str, object]:
             )
             if len(clamped_examples) >= 12:
                 break
+    def top(counter: Dict[str, int], limit: int = 10) -> list:
+        return sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:limit]
     return {
         "enabled": True,
         "total_soma_notes": len(soma_notes),
@@ -705,16 +831,23 @@ def _soma_usage_report(compiled: List[CompiledNote]) -> dict[str, object]:
         "overlap_short_fallbacks": sum(1 for note in soma_notes if note.continuous_conflict),
         "clamped_notes": sum(1 for note in soma_notes if note.note_was_clamped),
         "clamped_examples": clamped_examples,
+        "program_fallback_notes": sum(1 for note in soma_notes if note.fallback_program is not None),
+        "program_fallbacks": top(fallback_program_counts, limit=16),
+        "program_fallback_examples": fallback_examples,
+        "drum_variants": dict(sorted(drum_variant_counts.items())),
         "unique_sound_count": len(unique_sounds),
         "unique_stop_sound_count": len(unique_stop_sounds),
-        "top_programs": sorted(program_counts.items(), key=lambda item: (-item[1], item[0]))[:10],
-        "top_labels": sorted(label_counts.items(), key=lambda item: (-item[1], item[0]))[:10],
+        "top_programs": top(program_counts),
+        "top_labels": top(label_counts),
+        "top_categories": top(category_counts),
+        "top_soma_classes": top(class_counts),
         "policies": {
             "long_note_overlap": "downgrade_overlapping_continuous_notes_to_short",
             "out_of_range_note": "clamp_to_nearest_available_note",
+            "missing_program": "GM_121_128_and_custom_map_missing_programs_use_nearest_Soma_v20_substitute",
+            "drum_mapping": "Soma v20 0/0e/0p drum variants are supported; CLI --soma-drum-kit controls policy",
         },
     }
-
 
 
 def _arrangement_report(compiled: List[CompiledNote]) -> dict[str, object]:
@@ -733,12 +866,12 @@ def _arrangement_report(compiled: List[CompiledNote]) -> dict[str, object]:
     def top(counter: Dict[str, int], limit: int = 16) -> list[dict[str, object]]:
         return [{"name": name, "notes": count} for name, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:limit]]
     return {
-        "profile": "channel_track_program_summary_v0.9",
+        "profile": "channel_track_program_summary_v1.1",
         "track_groups": top(track_counts),
         "channel_groups": top(channel_counts),
         "program_groups": top(program_counts),
         "instrument_groups": top(instrument_counts),
-        "stage_policy": "visual FX follow the noteblock lane or Soma module for each triggered note; spacious stage reduces overlap",
+        "stage_policy": "visual FX follow the vanilla 2D noteblock position or Soma module for each triggered note; v1.1 prioritizes vanilla redstone-machine readability",
     }
 
 def _format_soma_report(report: dict[str, object]) -> str:
@@ -751,12 +884,23 @@ def _format_soma_report(report: dict[str, object]) -> str:
         f"- stopsound 数量: {report['stopsound_count']}",
         f"- 重叠长音降级为短音: {report['overlap_short_fallbacks']}",
         f"- 音域夹取 fallback: {report['clamped_notes']}",
+        f"- 缺失 program 映射 fallback: {report.get('program_fallback_notes', 0)}",
         f"- 使用 sound event 种类: {report['unique_sound_count']}",
     ]
     top_labels = report.get("top_labels") or []
     if top_labels:
         readable = ", ".join(f"{label}×{count}" for label, count in top_labels[:5])
         lines.append(f"- 主要 Soma 乐器: {readable}")
+    top_categories = report.get("top_categories") or []
+    if top_categories:
+        readable = ", ".join(f"{name}×{count}" for name, count in top_categories[:5])
+        lines.append(f"- 主要 Soma 分类: {readable}")
+    drum_variants = report.get("drum_variants") or {}
+    if drum_variants:
+        readable = ", ".join(f"{name}×{count}" for name, count in drum_variants.items())
+        lines.append(f"- 鼓组变体: {readable}")
+    if report.get("program_fallback_examples"):
+        lines.append("- 缺失 program fallback 示例已写入 midi2mc_manifest.json 的 soma_report.program_fallback_examples。")
     if report.get("clamped_examples"):
         lines.append("- 音域夹取示例已写入 midi2mc_manifest.json 的 soma_report.clamped_examples。")
     return "\n".join(lines)

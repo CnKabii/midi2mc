@@ -20,6 +20,10 @@ class ResolvedSound:
     resolved_note: int | None = None
     note_was_clamped: bool = False
     fallback_reason: str | None = None
+    fallback_program: int | None = None
+    drum_variant: str | None = None
+    mapping_category: str | None = None
+    soma_class: str | None = None
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,7 @@ class SoundEngineOptions:
     soma_map: Path | None = None
     soma_reference_note: int = 60
     soma_long_note_beats: float = 1.0
+    soma_drum_kit: str = "auto"
     ticks_per_quarter: int = 480
 
 
@@ -70,6 +75,7 @@ def build_sound_engine(options: SoundEngineOptions) -> SoundEngine:
             map_path=options.soma_map,
             reference_note=options.soma_reference_note,
             long_note_beats=options.soma_long_note_beats,
+            drum_kit=options.soma_drum_kit,
             ticks_per_quarter=options.ticks_per_quarter,
         )
     raise ValueError(f"Unknown sound engine: {options.name!r}")

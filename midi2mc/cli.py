@@ -10,7 +10,10 @@ from .interactive import run_interactive_wizard
 from .midi import MidiParseError, parse_midi
 from .recommend import TickRateRecommendation, recommend_tick_rate
 from .quality import quality_choices, quality_profile
+from .project import load_project_namespace, write_project_template
+from .preset_profiles import apply_preset, preset_choices, PRESETS
 from .summary import format_midi_summary_lines, warning_lines
+from .safety import analyze_safety, format_safety_report
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,7 +21,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="midi2mc",
         description="Convert a MIDI file into a Minecraft Java 1.21.11 datapack music show.",
     )
-    parser.add_argument("midi", nargs="?", help="Input .mid/.midi file. If omitted, starts the interactive wizard.")
+    parser.add_argument("midi", nargs="?", help="Input .mid/.midi file. If omitted, starts the interactive wizard unless --project is used.")
+    parser.add_argument("--project", help="Load a .m2mc.json project config. Paths inside the JSON are resolved relative to the project file.")
+    parser.add_argument("--write-project-template", metavar="PATH", help="Write an example .m2mc.json project config and exit.")
+    parser.add_argument("--preset", choices=preset_choices(), default=None, help="Apply a built-in style preset, e.g. vanilla_machine, vanilla_fx, vanilla_safe, soma_concert.")
+    parser.add_argument("--list-presets", action="store_true", help="List built-in presets and exit.")
     parser.add_argument("--interactive", "-i", action="store_true", help="Start the interactive wizard.")
     parser.add_argument("--out", default="output", help="Output directory. Default: output")
     parser.add_argument("--show-id", help="Datapack namespace/show id. Default: MIDI file name")
@@ -38,6 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--stage-profile",
         default="auto",
         help="Stage profile. Use auto, noteblock_machine, or soma_concert. Default: auto",
+    )
+    parser.add_argument(
+        "--stage-layout",
+        choices=["auto", "compact", "wide", "huge"],
+        default="auto",
+        help="Vanilla noteblock_machine layout. auto chooses compact/wide/huge from MIDI content. Default: auto",
     )
     parser.add_argument(
         "--soma-namespace",
@@ -62,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="For Soma v20, notes at least this many MIDI beats long use the c/continuous sound and get stopsound at note-off. Default: 1.0",
     )
     parser.add_argument(
+        "--soma-drum-kit",
+        choices=["auto", "normal", "electronic", "percussion"],
+        default="auto",
+        help="Soma v20 drum mapping. auto uses 0/0e/0p variants by drum type; normal forces v0.11-style 0.* drums. Default: auto",
+    )
+    parser.add_argument(
         "--tick-rate",
         default="auto",
         help="Compiler timebase TPS. Use an integer or 'auto'. Default: auto",
@@ -74,6 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
             "Legacy pack.mcmeta pack_format override. For Minecraft 1.21.11, leave this unset; "
             "midi2mc will write min_format [94, 1] and max_format 94."
         ),
+    )
+    parser.add_argument(
+        "--safe-mode",
+        action="store_true",
+        help="Apply conservative defaults for large/dense MIDI: low quality, 8 notes/tick, no stage particles, no Piano Roll, no Show FX.",
     )
     parser.add_argument(
         "--quality",
@@ -119,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Safety cap for very dense MIDI chords. Default comes from --quality.",
     )
     parser.add_argument("--no-zip", action="store_true", help="Do not create a .zip datapack")
+    parser.add_argument("--no-report", action="store_true", help="Do not generate report.html")
     parser.add_argument(
         "--legacy-1-20",
         action="store_true",
@@ -132,9 +157,33 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.list_presets:
+        print("Built-in midi2mc presets:")
+        for name, profile in PRESETS.items():
+            print(f"  {name:18s} {profile.label} - {profile.description}")
+        return 0
+
+    if args.write_project_template:
+        path = write_project_template(Path(args.write_project_template))
+        print(f"[midi2mc] Project template written: {path}")
+        return 0
+
+    if args.project:
+        try:
+            project_args = load_project_namespace(Path(args.project), args)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"[midi2mc] {exc}", file=sys.stderr)
+            return 2
+        project_args = apply_preset(project_args)
+        print(f"[midi2mc] Loaded project config: {Path(args.project)}")
+        if getattr(project_args, "preset", None):
+            print(f"[midi2mc] Preset: {project_args.preset}")
+        return run_export_from_args(project_args)
+
     if args.interactive or not args.midi:
         return run_interactive_wizard(args)
 
+    args = apply_preset(args)
     return run_export_from_args(args)
 
 
@@ -177,12 +226,20 @@ def run_export_from_args(args: argparse.Namespace) -> int:
         print(f"[midi2mc] {exc}", file=sys.stderr)
         return 2
 
-    profile = quality_profile(args.quality)
+    effective_quality = "low" if getattr(args, "safe_mode", False) else args.quality
+    profile = quality_profile(effective_quality)
     max_notes_per_tick = args.max_notes_per_tick if args.max_notes_per_tick is not None else profile.max_notes_per_tick
     stage_particles = (not args.no_stage_particles) and profile.stage_particles
     piano_roll = profile.piano_roll if args.piano_roll is None else bool(args.piano_roll)
+    show_fx = args.show_fx
+    if getattr(args, "safe_mode", False):
+        max_notes_per_tick = min(max_notes_per_tick, profile.max_notes_per_tick)
+        stage_particles = False
+        piano_roll = False
+        show_fx = "none"
     if args.mode != "command_stage":
         piano_roll = False
+        show_fx = "none"
 
     options = DatapackOptions(
         show_id=show_id,
@@ -193,18 +250,28 @@ def run_export_from_args(args: argparse.Namespace) -> int:
         gain=args.gain,
         sound_engine=args.sound_engine,
         stage_profile=args.stage_profile,
+        stage_layout=args.stage_layout,
         soma_namespace=args.soma_namespace,
         soma_map=Path(args.soma_map) if args.soma_map else None,
         soma_reference_note=args.soma_reference_note,
         soma_long_note_beats=args.soma_long_note_beats,
+        soma_drum_kit=args.soma_drum_kit,
         quality=profile.name,
+        safe_mode=bool(getattr(args, "safe_mode", False)),
         max_notes_per_tick=max_notes_per_tick,
         stage_particles=stage_particles,
         piano_roll=piano_roll,
-        show_fx=args.show_fx,
+        show_fx=show_fx,
+        preset=getattr(args, "preset", None),
+        html_report=not getattr(args, "no_report", False),
         zip_output=not args.no_zip,
         minecraft_1_21_layout=not args.legacy_1_20,
     )
+    safety = analyze_safety(song, tick_rate=tick_rate, max_notes_per_tick=max_notes_per_tick, quality=profile.name, mode=args.mode, sound_engine=args.sound_engine, stage_profile=args.stage_profile, show_fx=show_fx, piano_roll=piano_roll)
+    if getattr(args, "safe_mode", False) or safety.level in {"medium", "high", "critical"}:
+        print("\n[midi2mc] 安全评估:")
+        print(format_safety_report(safety))
+
     result = export_datapack(song, options)
 
     print_summary(result, song.duration_sec, tick_rate, recommendation, song=song, max_notes_per_tick=max_notes_per_tick)
@@ -216,7 +283,7 @@ def _print_parse_error(path: Path, exc: MidiParseError) -> None:
     print(f"  reason: {exc}", file=sys.stderr)
     print("  tips:", file=sys.stderr)
     print("    - 确认输入的是 .mid/.midi 标准 MIDI 文件，不是 mp3/wav/ogg。", file=sys.stderr)
-    print("    - 当前 v0.9.0 支持 PPQ/ticks-per-quarter MIDI，不支持 SMPTE division。", file=sys.stderr)
+    print("    - 当前 v1.9.0 支持 PPQ/ticks-per-quarter MIDI，不支持 SMPTE division。", file=sys.stderr)
     print("    - 可以先用 examples/demo_scale.mid 测试环境是否正常。", file=sys.stderr)
 
 
@@ -242,6 +309,9 @@ def print_summary(result, duration_sec: float, tick_rate: int, recommendation: T
     if result.zip_path:
         print(f"  datapack zip: {result.zip_path}")
     print(f"  how-to file: {result.pack_dir.parent / (result.namespace + '_HOW_TO_PLAY.txt')}")
+    report_path = result.pack_dir / "report.html"
+    if report_path.exists():
+        print(f"  html report: {report_path}")
     print("\nIn Minecraft 1.21.11:")
     print("  /reload")
     print(f"  /function {result.namespace}:setup")

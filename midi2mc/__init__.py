@@ -1,3 +1,3 @@
-"""midi2mc: MIDI to Minecraft datapack show compiler."""
+__all__ = ["__version__"]
 
-__version__ = "0.9.0"
+__version__ = "1.9.0"

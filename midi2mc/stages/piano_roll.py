@@ -33,7 +33,7 @@ def piano_roll_note_lines(
 ) -> list[str]:
     """Generate a small particle piano-roll strip in front of the stage.
 
-    v0.9.0 keeps this visualizer intentionally lightweight: every note start draws
+    v1.1.0 keeps this visualizer intentionally lightweight: every note start draws
     a short end-rod strip at a horizontal position derived from pitch. It does not
     create entities or refresh active notes every tick, so the visual cost stays
     close to the number of note-on events.

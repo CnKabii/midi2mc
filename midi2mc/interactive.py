@@ -9,6 +9,7 @@ from .midi import MidiParseError, parse_midi
 from .recommend import recommend_tick_rate
 from .quality import quality_choice_items, quality_profile
 from .summary import format_midi_summary_lines, warning_lines
+from .safety import analyze_safety, format_safety_report
 
 
 def _input(prompt: str) -> str:
@@ -20,7 +21,7 @@ def _input(prompt: str) -> str:
 
 def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
     print("=" * 60)
-    print("midi2mc v0.9.0 交互式生成器 / Minecraft Java 1.21.11")
+    print("midi2mc v1.9.0 交互式生成器 / Minecraft Java 1.21.11")
     print("=" * 60)
     print("把 MIDI 编译成数据包 zip，然后放进世界 datapacks 文件夹。\n")
 
@@ -116,21 +117,47 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
         else:
             stage_profile = "none"
 
+    stage_layout = getattr(args, "stage_layout", "auto") if args else "auto"
+    if mode == "command_stage" and stage_profile == "noteblock_machine":
+        stage_layout = _ask_choice(
+            "原版舞台布局",
+            [
+                ("auto", "auto：根据 MIDI 内容自动选择 compact / wide / huge（推荐）"),
+                ("compact", "compact：小型独奏/简单 MIDI"),
+                ("wide", "wide：中型乐队/多乐器 MIDI"),
+                ("huge", "huge：大型 MIDI，给特效和音符盒更多空间"),
+            ],
+            default=str(stage_layout or "auto"),
+        )
+
     soma_namespace = getattr(args, "soma_namespace", "") if args else ""
     soma_map = Path(getattr(args, "soma_map", "")) if args and getattr(args, "soma_map", None) else None
     soma_reference_note = getattr(args, "soma_reference_note", 60) if args else 60
     soma_long_note_beats = getattr(args, "soma_long_note_beats", 1.0) if args else 1.0
+    soma_drum_kit = getattr(args, "soma_drum_kit", "auto") if args else "auto"
     if sound_engine == "soma":
         print("\n[midi2mc] Soma 音源提示：")
         print("  - 需要玩家启用包含对应 sound event 的 Soma 资源包。")
-        print("  - v0.9.0 已支持 Soma layered concert stage：drums / bass / piano / guitar / strings / wind / synth / other 八个乐器区。")
+        print("  - v1.9.0 已支持 Soma layered concert stage：drums / bass / piano / guitar / strings / wind / synth / other 八个乐器区。")
         print("  - 默认使用 Soma v20 表格规则：短音 编号.音高，长音 编号c.音高；长音灯会从下一 tick 亮起，连续长音交接会自然闪断。")
+        print("  - v0.12 增强映射：GM 121-128 音效类 program 会自动 fallback，鼓组可用 0/0e/0p 变体。")
         print("  - 如果你的 Soma sound event 命名不同，可以之后用命令行 --soma-map 指定 JSON。")
         soma_namespace = _ask_text("Soma namespace", str(soma_namespace))
         soma_reference_note = _ask_int("Soma 旋律采样参考音 MIDI note（旧 simple map 用，v20 可直接回车）", int(soma_reference_note), minimum=0, maximum=127)
         soma_long_note_beats = _ask_float("Soma 长音阈值：多少拍以上使用 c 音色并 stopsound", float(soma_long_note_beats), minimum=0.0)
+        soma_drum_kit = _ask_choice(
+            "Soma 鼓组映射",
+            [
+                ("auto", "auto：kick/tom 用 0，snare/clap 用 0e，hat/cymbal/percussion 用 0p"),
+                ("normal", "normal：全部使用 0.*，最接近 v0.11 行为"),
+                ("electronic", "electronic：强制使用 0e.*"),
+                ("percussion", "percussion：强制使用 0p.*"),
+            ],
+            default=str(soma_drum_kit or "auto"),
+        )
 
-    default_quality = getattr(args, "quality", "medium") if args else "medium"
+    safe_mode = _ask_yes_no("是否启用 Safe Mode / 大型 MIDI 保守生成？", default=bool(getattr(args, "safe_mode", False)) if args else False)
+    default_quality = "low" if safe_mode else (getattr(args, "quality", "medium") if args else "medium")
     quality = _ask_choice(
         "质量档 / 性能预设",
         quality_choice_items(),
@@ -138,8 +165,12 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
     )
     profile = quality_profile(quality)
     stage_particles = (not getattr(args, "no_stage_particles", False)) and profile.stage_particles
+    if safe_mode:
+        stage_particles = False
     arg_piano_roll = getattr(args, "piano_roll", None) if args else None
     piano_roll = profile.piano_roll if arg_piano_roll is None else bool(arg_piano_roll)
+    if safe_mode:
+        piano_roll = False
     if mode != "command_stage":
         piano_roll = False
     print(f"[midi2mc] 质量档：{profile.label}")
@@ -156,8 +187,10 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
                 ("fireworks", "彩色 dust 烟花风格粒子：只在重音/长音触发，不召唤真实烟花实体"),
                 ("both", "lightshow + 烟花风格粒子"),
             ],
-            default=str(show_fx or "auto"),
+            default="none" if safe_mode else str(show_fx or "auto"),
         )
+        if safe_mode:
+            show_fx = "none"
     else:
         show_fx = "none"
 
@@ -177,12 +210,18 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
 
     gain = _ask_float("音量倍率", getattr(args, "gain", 1.0) if args else 1.0, minimum=0.0)
     default_max_notes = (getattr(args, "max_notes_per_tick", None) if args else None) or profile.max_notes_per_tick
+    if safe_mode:
+        default_max_notes = min(default_max_notes, 8)
     max_notes = _ask_int(
         "同一 tick 最大复音数（防止超密 MIDI 刷爆命令）",
         default_max_notes,
         minimum=1,
         maximum=256,
     )
+    safety = analyze_safety(song, tick_rate=tick_rate, max_notes_per_tick=max_notes, quality=quality, mode=mode, sound_engine=sound_engine, stage_profile=stage_profile, show_fx=show_fx, piano_roll=piano_roll)
+    print("\n[midi2mc] 大型 MIDI 安全评估：")
+    print(format_safety_report(safety))
+
     warnings = warning_lines(song, tick_rate, max_notes)
     if warnings:
         print("\n[midi2mc] 生成前风险提示：")
@@ -199,11 +238,14 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
         gain=gain,
         sound_engine=sound_engine,
         stage_profile=stage_profile if stage_profile != "none" else "noteblock_machine",
+        stage_layout=stage_layout,
         soma_namespace=soma_namespace,
         soma_map=soma_map,
         soma_reference_note=soma_reference_note,
         soma_long_note_beats=soma_long_note_beats,
+        soma_drum_kit=soma_drum_kit,
         quality=quality,
+        safe_mode=safe_mode,
         max_notes_per_tick=max_notes,
         stage_particles=stage_particles,
         piano_roll=piano_roll,
@@ -218,7 +260,9 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
     print(f"  Show ID: {result.namespace}")
     print(f"  音源引擎: {sound_engine}")
     print(f"  输出模式: {mode}")
+    print(f"  原版舞台布局: {stage_layout}")
     print(f"  质量档: {quality}")
+    print(f"  Safe Mode: {'开启' if safe_mode else '关闭'}")
     print(f"  舞台粒子: {'开启' if stage_particles else '关闭'}")
     print(f"  Piano Roll: {'开启' if piano_roll else '关闭'}")
     print(f"  Show FX: {show_fx}")

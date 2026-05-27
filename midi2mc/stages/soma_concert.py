@@ -31,20 +31,33 @@ def soma_module_for(compiled: CompiledNote) -> str:
     program = note.program
     key = (compiled.instrument_key or "").lower()
     label = (compiled.sound_label or "").lower()
-    if note.is_drum or key in {"basedrum", "snare", "hat"} or "drum" in label:
+    category = (compiled.mapping_category or "").lower()
+    if note.is_drum or key in {"basedrum", "snare", "hat"} or "drum" in label or "drum" in category:
         return "drums"
-    if key == "bass" or "bass" in label or 32 <= program <= 39:
+    if key == "bass" or "bass" in label or "bass" in category or 32 <= program <= 39:
         return "bass"
-    if key in {"guitar", "banjo"} or "guitar" in label or 24 <= program <= 31 or 104 <= program <= 111:
+    if key in {"guitar", "banjo"} or "guitar" in label or "guitar" in category or 24 <= program <= 31:
         return "guitar"
-    if "string" in label or "violin" in label or "cello" in label or 40 <= program <= 55:
+    if "string" in category or "string" in label or "violin" in label or "cello" in label or 40 <= program <= 55:
         return "strings"
-    if key == "flute" or "flute" in label or "wind" in label or "sax" in label or "brass" in label or 56 <= program <= 79:
+    if (
+        key == "flute"
+        or "flute" in label
+        or "wind" in label
+        or "brass" in category
+        or "reed" in category
+        or "pipe" in category
+        or "sax" in label
+        or 56 <= program <= 79
+        or 109 <= program <= 111
+    ):
         return "wind"
-    if key in {"bit", "chime"} or "synth" in label or "square" in label or 80 <= program <= 103:
+    if key in {"bit", "chime"} or "synth" in category or "synth" in label or 80 <= program <= 103:
         return "synth"
-    if key in {"harp", "pling", "bell", "xylophone", "iron_xylophone", "cow_bell"} or program <= 23:
+    if key in {"harp", "pling", "bell", "xylophone", "iron_xylophone", "cow_bell"} or "piano" in category or "chromatic" in category or program <= 23:
         return "piano"
+    if "ethnic" in category or 104 <= program <= 111:
+        return "guitar"
     return "other"
 
 
@@ -86,7 +99,7 @@ def soma_concert_reset_lines(namespace: str) -> list[str]:
 def soma_concert_clear_lines(namespace: str) -> list[str]:
     """Refresh short flashes and sustained lights once per tick.
 
-    v0.9.0 intentionally does *not* turn a continuous note on in the same
+    v1.1.0 intentionally does *not* turn a continuous note on in the same
     tick it starts. The note start only increments the module counter; the
     next tick's clear/refresh pass lights it. If one long note ends exactly
     as another starts, the lamp briefly turns off for that handoff tick instead
@@ -148,7 +161,7 @@ def soma_stage_usage_report(compiled: list[CompiledNote]) -> dict[str, object]:
     sustained = Counter(soma_module_for(note) for note in compiled if note.sound_engine == "soma" and note.used_continuous)
     return {
         "profile": "soma_concert",
-        "layout": "spacious_v0.9",
+        "layout": "spacious_v0.12_category_aware",
         "modules": {name: counter.get(name, 0) for name in MODULES},
         "sustained_modules": {name: sustained.get(name, 0) for name in MODULES},
         "module_count": len(MODULES),
