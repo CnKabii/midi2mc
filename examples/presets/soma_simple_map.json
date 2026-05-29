@@ -1,0 +1,21 @@
+{
+  "comment": "Example Soma sound map. Change values to match your resource pack's sound event names.",
+  "sound_map": {
+    "harp": "piano1",
+    "bass": "bass1",
+    "guitar": "guitar1",
+    "flute": "flute1",
+    "bell": "bell1",
+    "chime": "chime1",
+    "xylophone": "xylophone1",
+    "iron_xylophone": "xylophone1",
+    "cow_bell": "bell1",
+    "didgeridoo": "bass1",
+    "bit": "square1",
+    "banjo": "guitar1",
+    "pling": "piano1",
+    "basedrum": "drum.kick",
+    "snare": "drum.snare",
+    "hat": "drum.hat"
+  }
+}

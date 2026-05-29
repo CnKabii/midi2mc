@@ -1,0 +1,21 @@
+{
+  "format": "midi2mc.project.v1",
+  "midi": "../demo_scale.mid",
+  "show_id": "demo_vanilla_machine",
+  "out": "../../output",
+  "minecraft_version": "1.21.11",
+  "mode": "command_stage",
+  "sound_engine": "vanilla",
+  "stage_profile": "noteblock_machine",
+  "quality": "medium",
+  "safe_mode": false,
+  "tick_rate": "auto",
+  "gain": 1.0,
+  "max_notes_per_tick": null,
+  "stage_particles": true,
+  "piano_roll": false,
+  "show_fx": "none",
+  "zip_output": true,
+  "stage_template": "pulse",
+  "fx_profile": "clean"
+}

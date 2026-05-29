@@ -1,0 +1,35 @@
+{
+  "format": "midi2mc.project.v1",
+  "midi": "../demo_vanilla_dynamics.mid",
+  "out": "../../output",
+  "minecraft_version": "1.21.11",
+  "mode": "command_stage",
+  "sound_engine": "vanilla",
+  "stage_profile": "noteblock_machine",
+  "stage_layout": "wide",
+  "stage_template": "pulse",
+  "quality": "medium",
+  "safe_mode": false,
+  "tick_rate": "auto",
+  "gain": 1.0,
+  "max_notes_per_tick": null,
+  "stage_particles": true,
+  "piano_roll": false,
+  "zip_output": true,
+  "report_html": true,
+  "soma": {
+    "long_note_beats": 1.0,
+    "namespace": "",
+    "reference_note": 60,
+    "drum_kit": "auto",
+    "map": null
+  },
+  "minecraft": {
+    "legacy_1_20": false,
+    "pack_format": null
+  },
+  "show_id": "demo_vanilla_redstone",
+  "preset": "vanilla_redstone",
+  "show_fx": "lightshow",
+  "fx_profile": "redstone"
+}

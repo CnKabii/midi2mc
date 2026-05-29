@@ -82,8 +82,13 @@ def write_html_report(
         ("Mode", options.mode),
         ("Sound engine", options.sound_engine),
         ("Stage profile", manifest.get("stage_profile", options.stage_profile)),
+        ("Stage template", manifest.get("stage_template", getattr(options, "stage_template", "pulse"))),
+        ("Pulse hold ticks", manifest.get("module_hold_ticks", getattr(options, "module_hold_ticks", 0)) or "auto"),
         ("Quality", options.quality),
         ("Show FX", manifest.get("show_fx", options.show_fx)),
+        ("FX Profile", manifest.get("fx_profile", getattr(options, "fx_profile", "concert"))),
+        ("FX intensity", manifest.get("fx_intensity", getattr(options, "fx_intensity", 1.0))),
+        ("FX layers", manifest.get("fx_layers", getattr(options, "fx_layers", "all"))),
         ("Safe Mode", options.safe_mode),
         ("Duration", f"{stats.duration_text} / {total_ticks} ticks @ {options.tick_rate} TPS"),
         ("Recommended /tick rate", recommendation.tick_rate),
@@ -116,7 +121,7 @@ def write_html_report(
     html_text = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>midi2mc report - {_esc(namespace)}</title><style>{style}</style></head>
 <body>
-<h1>midi2mc v1.9.0 Report</h1>
+<h1>midi2mc v3.0.0 Report</h1>
 <p class="muted">Generated for <strong>{_esc(namespace)}</strong>. Attach this file or <code>midi2mc_manifest.json</code> when reporting issues.</p>
 <div class="cards">
   <div class="card"><strong>Risk</strong><br><span class="risk-{_esc(safety.level)}">{_esc(safety.level)} / {safety.score}</span></div>

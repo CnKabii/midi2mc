@@ -31,7 +31,7 @@ VANILLA_INSTRUMENTS = {
 INSTRUMENT_BASE_BLOCKS = {
     "harp": "minecraft:dirt",
     "basedrum": "minecraft:stone",
-    "snare": "minecraft:sand",
+    "snare": "minecraft:sandstone",
     "hat": "minecraft:glass",
     "bass": "minecraft:oak_planks",
     "flute": "minecraft:clay",

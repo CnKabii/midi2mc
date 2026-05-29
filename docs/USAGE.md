@@ -1,4 +1,12 @@
-# midi2mc v1.9.0 使用指南
+# midi2mc v3.0.0 使用指南
+
+## GUI 快速开始
+
+```bash
+python -m midi2mc --gui
+```
+
+Windows 也可以双击 `run_gui.bat`。GUI 支持选择 MIDI 文件、`.m2mc.json` 项目配置、输出目录、Show ID、Preset，并可以直接编辑 quality、show_fx、stage_layout、stage_template、Safe Mode、舞台粒子、report、zip、Soma 长音和鼓组等配置。点击“分析 MIDI”可查看摘要、风险等级、推荐 tick rate 和游戏内命令；生成完成后可打开输出目录或 report.html。
 
 ## 最短路径
 
@@ -97,3 +105,38 @@ python -m midi2mc song.mid --preset vanilla_safe
 ```
 
 Safe Mode 会偏保守：低质量、较低同 tick 复音上限、关闭 Show FX / Piano Roll / 舞台粒子。
+
+
+## v2.8 原版舞台模板
+
+`stage_template` 支持：
+
+- `pulse`：默认脉冲舞台。
+- `classic_line`：经典一排音符盒机器。
+- `minimal`：极简 marker/粒子舞台，方便自己装修。
+
+命令示例：
+
+```bash
+python -m midi2mc song.mid --stage-template classic_line
+python -m midi2mc song.mid --stage-template minimal
+```
+
+
+## v2.9 FX Profile
+
+`show_fx` 和 `fx_profile` 是两层设置：
+
+- `show_fx`：选择效果层，支持 `none`、`lightshow`、`fireworks`、`both`。
+- `fx_profile`：选择视觉风格，支持 `clean`、`redstone`、`concert`、`magic`。
+
+推荐组合：
+
+```bash
+python -m midi2mc song.mid --preset vanilla_redstone
+python -m midi2mc song.mid --preset vanilla_magic
+python -m midi2mc song.mid --show-fx lightshow --fx-profile clean
+python -m midi2mc song.mid --show-fx both --fx-profile concert
+```
+
+`clean` 最稳，`redstone` 最有机器感，`concert` 适合常规演出，`magic` 更适合幻想/OST 风格 MIDI。

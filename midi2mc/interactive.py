@@ -21,7 +21,7 @@ def _input(prompt: str) -> str:
 
 def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
     print("=" * 60)
-    print("midi2mc v1.9.0 交互式生成器 / Minecraft Java 1.21.11")
+    print("midi2mc v3.0.0 交互式生成器 / Minecraft Java 1.21.11")
     print("=" * 60)
     print("把 MIDI 编译成数据包 zip，然后放进世界 datapacks 文件夹。\n")
 
@@ -130,6 +130,20 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
             default=str(stage_layout or "auto"),
         )
 
+    stage_template = getattr(args, "stage_template", "pulse") if args else "pulse"
+    if mode == "command_stage" and stage_profile == "noteblock_machine":
+        stage_template = _ask_choice(
+            "原版舞台模板",
+            [
+                ("pulse", "pulse：默认脉冲舞台，音符盒/灯短暂出现后消散"),
+                ("classic_line", "classic_line：复古一排音符盒机器"),
+                ("minimal", "minimal：极简 marker/粒子舞台，方便用户自己装修"),
+            ],
+            default=str(stage_template or "pulse"),
+        )
+    else:
+        stage_template = "pulse"
+
     soma_namespace = getattr(args, "soma_namespace", "") if args else ""
     soma_map = Path(getattr(args, "soma_map", "")) if args and getattr(args, "soma_map", None) else None
     soma_reference_note = getattr(args, "soma_reference_note", 60) if args else 60
@@ -138,7 +152,7 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
     if sound_engine == "soma":
         print("\n[midi2mc] Soma 音源提示：")
         print("  - 需要玩家启用包含对应 sound event 的 Soma 资源包。")
-        print("  - v1.9.0 已支持 Soma layered concert stage：drums / bass / piano / guitar / strings / wind / synth / other 八个乐器区。")
+        print("  - v3.0.0 已支持 Soma layered concert stage：drums / bass / piano / guitar / strings / wind / synth / other 八个乐器区。")
         print("  - 默认使用 Soma v20 表格规则：短音 编号.音高，长音 编号c.音高；长音灯会从下一 tick 亮起，连续长音交接会自然闪断。")
         print("  - v0.12 增强映射：GM 121-128 音效类 program 会自动 fallback，鼓组可用 0/0e/0p 变体。")
         print("  - 如果你的 Soma sound event 命名不同，可以之后用命令行 --soma-map 指定 JSON。")
@@ -181,18 +195,29 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
         show_fx = _ask_choice(
             "Show FX / 额外灯光烟花效果",
             [
-                ("auto", "自动：Soma 演出舞台默认 lightshow，low 档关闭"),
+                ("auto", "自动：原版/Soma 舞台默认 lightshow，low 档关闭"),
                 ("none", "关闭额外效果，只保留基础舞台反馈"),
-                ("lightshow", "轻量灯光：每个音符生成彩色 dust 灯光"),
-                ("fireworks", "彩色 dust 烟花风格粒子：只在重音/长音触发，不召唤真实烟花实体"),
+                ("lightshow", "轻量灯光：启用所选 FX 风格的灯光层"),
+                ("fireworks", "烟花风格粒子：只在重音/和弦/结尾触发，不召唤真实烟花实体"),
                 ("both", "lightshow + 烟花风格粒子"),
             ],
             default="none" if safe_mode else str(show_fx or "auto"),
+        )
+        fx_profile = _ask_choice(
+            "FX Profile / 特效风格",
+            [
+                ("clean", "clean：少量 dust，清爽低干扰"),
+                ("redstone", "redstone：暖色 dust + electric_spark，机械/红石感"),
+                ("concert", "concert：彩色 dust + 少量 end_rod，演唱会感（默认）"),
+                ("magic", "magic：紫蓝 dust + enchant/portal 点缀，魔法感"),
+            ],
+            default=str(getattr(args, "fx_profile", "concert") if args else "concert"),
         )
         if safe_mode:
             show_fx = "none"
     else:
         show_fx = "none"
+        fx_profile = "concert"
 
     arg_tick_rate = str(getattr(args, "tick_rate", "auto") if args else "auto").strip().lower()
     default_tick_rate = recommendation.tick_rate if arg_tick_rate in {"", "auto", "a"} else _safe_int(arg_tick_rate, recommendation.tick_rate)
@@ -239,6 +264,7 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
         sound_engine=sound_engine,
         stage_profile=stage_profile if stage_profile != "none" else "noteblock_machine",
         stage_layout=stage_layout,
+        stage_template=stage_template,
         soma_namespace=soma_namespace,
         soma_map=soma_map,
         soma_reference_note=soma_reference_note,
@@ -250,6 +276,7 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
         stage_particles=stage_particles,
         piano_roll=piano_roll,
         show_fx=show_fx,
+        fx_profile=fx_profile,
         zip_output=zip_output,
         minecraft_1_21_layout=not getattr(args, "legacy_1_20", False) if args else True,
     )
@@ -261,11 +288,13 @@ def run_interactive_wizard(args: argparse.Namespace | None = None) -> int:
     print(f"  音源引擎: {sound_engine}")
     print(f"  输出模式: {mode}")
     print(f"  原版舞台布局: {stage_layout}")
+    print(f"  原版舞台模板: {stage_template}")
     print(f"  质量档: {quality}")
     print(f"  Safe Mode: {'开启' if safe_mode else '关闭'}")
     print(f"  舞台粒子: {'开启' if stage_particles else '关闭'}")
     print(f"  Piano Roll: {'开启' if piano_roll else '关闭'}")
     print(f"  Show FX: {show_fx}")
+    print(f"  FX Profile: {fx_profile}")
     print(f"  音符: {song.note_count} parsed / {result.compiled_note_count} compiled")
     print(f"  时长: {song.duration_sec:.2f}s / {result.total_ticks} ticks @ {tick_rate} TPS")
     print(f"  数据包文件夹: {result.pack_dir}")

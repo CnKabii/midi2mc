@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "midi2mc"
-version = "1.9.0"
+version = "3.0.0"
 description = "Convert MIDI files into Minecraft Java datapack music shows."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,6 +24,7 @@ dependencies = []
 
 [project.scripts]
 midi2mc = "midi2mc.cli:main"
+midi2mc-gui = "midi2mc.gui:run_gui"
 
 [tool.setuptools]
 packages = ["midi2mc", "midi2mc.engines", "midi2mc.stages", "midi2mc.presets"]

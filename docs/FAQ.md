@@ -1,4 +1,4 @@
-# midi2mc v1.9.0 FAQ
+# midi2mc v3.0.0 FAQ
 
 ## 为什么现在优先原版？
 
@@ -33,3 +33,41 @@ python -m midi2mc song.mid --preset vanilla_safe
 ```
 
 确认能播放后再改成 `vanilla_machine` 或 `vanilla_fx`。
+
+## 怎么打开 GUI？
+
+运行：
+
+```bash
+python -m midi2mc --gui
+```
+
+Windows 用户也可以双击 `run_gui.bat`。如果 Python 环境没有 tkinter，GUI 会无法启动；这时可以继续使用 `python -m midi2mc` 的交互式向导。
+
+
+## v2.8 原版舞台模板
+
+`stage_template` 支持：
+
+- `pulse`：默认脉冲舞台。
+- `classic_line`：经典一排音符盒机器。
+- `minimal`：极简 marker/粒子舞台，方便自己装修。
+
+命令示例：
+
+```bash
+python -m midi2mc song.mid --stage-template classic_line
+python -m midi2mc song.mid --stage-template minimal
+```
+
+
+## FX Profile 是什么？
+
+`show_fx` 决定开不开灯光/烟花层，`fx_profile` 决定这些效果看起来是什么风格。
+
+- 想少一点粒子：用 `--fx-profile clean`。
+- 想要红石机器感：用 `--fx-profile redstone`。
+- 想要默认演出感：用 `--fx-profile concert`。
+- 想要魔法/幻想感：用 `--fx-profile magic`。
+
+如果担心性能，先用 `show_fx=lightshow` 或 `safe_mode=true`，不要一开始就开 `both`。

@@ -37,7 +37,7 @@ from .model import CompiledNote, MidiSong, NoteEvent
 from .recommend import recommend_tick_rate
 from .quality import quality_profile
 from .stages.piano_roll import piano_roll_note_lines, piano_roll_usage_report
-from .stages.show_fx import resolve_show_fx, show_fx_note_lines, show_fx_tick_lines, show_fx_usage_report
+from .stages.show_fx import resolve_show_fx, show_fx_note_lines, show_fx_tick_lines, show_fx_usage_report, normalize_fx_profile
 from .summary import build_song_stats, format_midi_summary_text, warning_lines
 from .safety import analyze_safety, format_safety_report
 from .report import write_html_report
@@ -59,6 +59,8 @@ class DatapackOptions:
     sound_engine: str = "vanilla"  # vanilla | soma
     stage_profile: str = "auto"  # auto | noteblock_machine | soma_concert
     stage_layout: str = "auto"  # vanilla noteblock layout: auto | compact | wide | huge
+    stage_template: str = "pulse"  # vanilla stage template: pulse | classic_line | minimal
+    module_hold_ticks: int = 0  # 0=auto; vanilla Pulse Stage module hold override
     soma_namespace: str = ""
     soma_map: Path | None = None
     soma_reference_note: int = 60
@@ -70,6 +72,9 @@ class DatapackOptions:
     stage_particles: bool = True
     piano_roll: bool | None = None
     show_fx: str = "auto"  # auto | none | lightshow | fireworks | both
+    fx_profile: str = "concert"  # clean | redstone | concert | magic
+    fx_intensity: float = 1.0
+    fx_layers: str = "all"
     preset: str | None = None
     html_report: bool = True
     zip_output: bool = True
@@ -108,6 +113,8 @@ def _normalize_stage_options(options: DatapackOptions) -> DatapackOptions:
         sound_engine=options.sound_engine,
         stage_profile=profile,
         stage_layout=options.stage_layout,
+        stage_template=options.stage_template,
+        module_hold_ticks=options.module_hold_ticks,
         soma_namespace=options.soma_namespace,
         soma_map=options.soma_map,
         soma_reference_note=options.soma_reference_note,
@@ -119,6 +126,9 @@ def _normalize_stage_options(options: DatapackOptions) -> DatapackOptions:
         stage_particles=options.stage_particles,
         piano_roll=options.piano_roll,
         show_fx=options.show_fx,
+        fx_profile=options.fx_profile,
+        fx_intensity=options.fx_intensity,
+        fx_layers=options.fx_layers,
         preset=options.preset,
         html_report=options.html_report,
         zip_output=options.zip_output,
@@ -155,7 +165,7 @@ def export_datapack(song: MidiSong, options: DatapackOptions) -> DatapackResult:
 
     if options.mode == "command_stage" and options.stage_profile == "noteblock_machine":
         for note in compiled:
-            pulse_clear_by_tick[note.mc_tick + pulse_hold_ticks_for(note, options.tick_rate)].append(note)
+            pulse_clear_by_tick[note.mc_tick + pulse_hold_ticks_for(note, options.tick_rate, options.module_hold_ticks)].append(note)
 
     total_ticks = max(1, math.ceil(song.duration_sec * options.tick_rate) + 2)
 
@@ -163,7 +173,7 @@ def export_datapack(song: MidiSong, options: DatapackOptions) -> DatapackResult:
     _write_tags(tags_dir, namespace)
     _write_control_functions(ns_function_dir, namespace, options, total_ticks)
     _write_dispatch_functions(dispatch_dir, by_tick, namespace, total_ticks, stop_by_tick, pulse_clear_by_tick)
-    noteblock_layout = resolve_noteblock_layout(compiled, options.stage_layout) if options.stage_profile == "noteblock_machine" else None
+    noteblock_layout = resolve_noteblock_layout(compiled, options.stage_layout, options.stage_template) if options.stage_profile == "noteblock_machine" else None
     _write_event_functions(events_dir, by_tick, options, stop_by_tick, noteblock_layout, pulse_clear_by_tick, ticks_per_quarter=song.ticks_per_quarter)
     if options.mode == "command_stage":
         beat_info = resolve_beat_info(song, options.tick_rate) if options.stage_profile == "noteblock_machine" else None
@@ -296,9 +306,13 @@ def _show_fx_enabled(options: DatapackOptions) -> str:
     return resolve_show_fx(options.show_fx, mode=options.mode, stage_profile=_effective_stage_profile(options), quality=options.quality)
 
 
+def _fx_profile(options: DatapackOptions) -> str:
+    return normalize_fx_profile(getattr(options, "fx_profile", "concert"))
+
+
 def _write_pack_mcmeta(root: Path, options: DatapackOptions, namespace: str) -> None:
     pack: dict[str, object] = {
-        "description": f"midi2mc v1.9.0 datapack for Minecraft Java 1.21.11: {namespace}",
+        "description": f"midi2mc v3.0.0 datapack for Minecraft Java 1.21.11: {namespace}",
     }
     if options.pack_format is not None:
         pack["pack_format"] = options.pack_format
@@ -467,7 +481,21 @@ def _write_event_functions(events_dir: Path, by_tick: Dict[int, List[CompiledNot
         if notes and options.mode == "command_stage":
             fx_profile = _show_fx_enabled(options)
             if fx_profile != "none":
-                lines.extend(show_fx_tick_lines(notes, namespace, min_note, max_note, options.stage_profile, fx_profile, noteblock_layout, ticks_per_quarter=ticks_per_quarter))
+                lines.extend(show_fx_tick_lines(
+                    notes,
+                    namespace,
+                    min_note,
+                    max_note,
+                    options.stage_profile,
+                    fx_profile,
+                    noteblock_layout,
+                    ticks_per_quarter=ticks_per_quarter,
+                    current_tick=tick,
+                    final_note_tick=max(by_tick.keys()) if by_tick else None,
+                    fx_style=_fx_profile(options),
+                    fx_intensity=getattr(options, "fx_intensity", 1.0),
+                    fx_layers=getattr(options, "fx_layers", "all"),
+                ))
         for compiled in stops:
             if compiled.stop_sound_id:
                 category = "voice" if compiled.sound_engine == "soma" else "master"
@@ -489,7 +517,7 @@ def _write_event_functions(events_dir: Path, by_tick: Dict[int, List[CompiledNot
                     lines.extend(piano_roll_note_lines(compiled, namespace, min_note, max_note))
                 fx_profile = _show_fx_enabled(options)
                 if fx_profile != "none":
-                    lines.extend(show_fx_note_lines(compiled, namespace, min_note, max_note, options.stage_profile, fx_profile, noteblock_layout))
+                    lines.extend(show_fx_note_lines(compiled, namespace, min_note, max_note, options.stage_profile, fx_profile, noteblock_layout, fx_style=_fx_profile(options), fx_intensity=getattr(options, "fx_intensity", 1.0), fx_layers=getattr(options, "fx_layers", "all")))
         _write_function(events_dir / f"{tick:06d}.mcfunction", lines)
 
 
@@ -558,7 +586,7 @@ def _write_readme(root: Path, namespace: str, options: DatapackOptions, song: Mi
     soma_report_text = _format_soma_report(_soma_usage_report(compiled))
     beat_info = resolve_beat_info(song, options.tick_rate)
 
-    text = f"""midi2mc v1.9.0 数据包说明：{namespace}
+    text = f"""midi2mc v3.0.0 数据包说明：{namespace}
 
 这是一个由 midi2mc 自动生成的 Minecraft Java 1.21.11 MIDI 音乐数据包。
 当前版本目标是：原版优先的小工具 + 数据包；v1.9 合并了 preset 系统、HTML 报告和兼容/安全整理。原版 Pulse Stage 保持干净骨架，音符盒/底座/灯在发音时短暂保持数 tick 后自动消散；舞台保留 4/4 节拍灯，但去掉 actionbar Bar/Beat 文字和移动播放头，减少视觉干扰。Soma 作为高级音源模式保留。
@@ -598,12 +626,16 @@ def _write_readme(root: Path, namespace: str, options: DatapackOptions, song: Mi
 - 音源引擎: {options.sound_engine}
 - 舞台配置: {_effective_stage_profile(options)}
 - 原版舞台布局: {options.stage_layout}
+- 原版舞台模板: {options.stage_template}
+- Pulse 模块保持: {options.module_hold_ticks if options.module_hold_ticks else "auto"}
 - Preset: {options.preset or "none"}
 - 质量档: {options.quality}
 - Safe Mode: {"开启" if options.safe_mode else "关闭"}
 - 舞台粒子: {"开启" if options.stage_particles else "关闭"}
 - Piano Roll 粒子光带: {"开启" if _piano_roll_enabled(options) else "关闭"}
 - Show FX / 灯光烟花效果: {_show_fx_enabled(options)}
+- FX Profile / 特效风格: {_fx_profile(options)}
+- FX 强度 / 层: {options.fx_intensity} / {options.fx_layers}
 - Soma sound category: voice
 - Soma sound event: 不添加 soma: 命名空间，示例 2.66 / 2c.66
 - 编译 TPS: {options.tick_rate}
@@ -699,11 +731,11 @@ def _write_manifest(
     recommendation = recommend_tick_rate(song)
     stats = build_song_stats(song, tick_rate=options.tick_rate, max_notes_per_tick=options.max_notes_per_tick)
     data = {
-        "format": "midi2mc.show.v1.9.0",
+        "format": "midi2mc.show.v3.0.0",
         "project_config_support": ".m2mc.json",
         "preset": options.preset,
         "report_html": bool(options.html_report),
-        "documentation_version": "v1.9.0",
+        "documentation_version": "v3.0.0",
         "namespace": namespace,
         "target_minecraft": "Java 1.21.11",
         "pack_format": options.pack_format,
@@ -716,6 +748,8 @@ def _write_manifest(
         "sound_engine": options.sound_engine,
         "stage_profile": _effective_stage_profile(options),
         "stage_layout": options.stage_layout,
+        "stage_template": options.stage_template,
+        "module_hold_ticks": options.module_hold_ticks,
         "engine": build_sound_engine(SoundEngineOptions(name=options.sound_engine, gain=options.gain, soma_namespace=options.soma_namespace, soma_map=options.soma_map, soma_reference_note=options.soma_reference_note, soma_long_note_beats=options.soma_long_note_beats, soma_drum_kit=options.soma_drum_kit, ticks_per_quarter=song.ticks_per_quarter)).manifest(),
         "duration_seconds": round(song.duration_sec, 3),
         "duration_text": stats.duration_text,
@@ -731,6 +765,9 @@ def _write_manifest(
         "stage_particles": options.stage_particles,
         "piano_roll": _piano_roll_enabled(options),
         "show_fx": _show_fx_enabled(options),
+        "fx_profile": _fx_profile(options),
+        "fx_intensity": options.fx_intensity,
+        "fx_layers": options.fx_layers,
         "note_range": stats.note_range,
         "used_track_count": stats.used_track_count,
         "used_channel_count": stats.used_channel_count,
@@ -739,9 +776,9 @@ def _write_manifest(
         "track_names": song.track_names,
         "top_instruments": stats.top_instruments,
         "soma_report": _soma_usage_report(compiled),
-        "stage_report": _stage_usage_report(compiled, options.stage_profile, options.stage_layout),
+        "stage_report": _stage_usage_report(compiled, options.stage_profile, options.stage_layout, options.stage_template),
         "visualizer_report": piano_roll_usage_report(compiled, _piano_roll_enabled(options) and options.mode == "command_stage"),
-        "show_fx_report": show_fx_usage_report(compiled, _show_fx_enabled(options), _effective_stage_profile(options)),
+        "show_fx_report": show_fx_usage_report(compiled, _show_fx_enabled(options), _effective_stage_profile(options), fx_style=_fx_profile(options), fx_intensity=options.fx_intensity, fx_layers=options.fx_layers),
         "beat_report": _beat_usage_report(song, options),
         "arrangement_report": _arrangement_report(compiled),
         "safety_report": analyze_safety(song, tick_rate=options.tick_rate, max_notes_per_tick=options.max_notes_per_tick, quality=options.quality, mode=options.mode, sound_engine=options.sound_engine, stage_profile=_effective_stage_profile(options), show_fx=_show_fx_enabled(options), piano_roll=_piano_roll_enabled(options)).manifest(),
@@ -764,10 +801,10 @@ def _beat_usage_report(song: MidiSong, options: DatapackOptions) -> dict[str, ob
     }
 
 
-def _stage_usage_report(compiled: List[CompiledNote], stage_profile: str, stage_layout: str = "auto") -> dict[str, object]:
+def _stage_usage_report(compiled: List[CompiledNote], stage_profile: str, stage_layout: str = "auto", stage_template: str = "pulse") -> dict[str, object]:
     if stage_profile == "soma_concert":
         return soma_stage_usage_report(compiled)
-    return noteblock_stage_usage_report(compiled, stage_layout) if stage_profile == "noteblock_machine" else {"profile": stage_profile, "enabled": stage_profile != "none"}
+    return noteblock_stage_usage_report(compiled, stage_layout, stage_template) if stage_profile == "noteblock_machine" else {"profile": stage_profile, "enabled": stage_profile != "none"}
 
 
 def _soma_usage_report(compiled: List[CompiledNote]) -> dict[str, object]:

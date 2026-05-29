@@ -27,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preset", choices=preset_choices(), default=None, help="Apply a built-in style preset, e.g. vanilla_machine, vanilla_fx, vanilla_safe, soma_concert.")
     parser.add_argument("--list-presets", action="store_true", help="List built-in presets and exit.")
     parser.add_argument("--interactive", "-i", action="store_true", help="Start the interactive wizard.")
+    parser.add_argument("--gui", action="store_true", help="Start the simple local tkinter GUI.")
     parser.add_argument("--out", default="output", help="Output directory. Default: output")
     parser.add_argument("--show-id", help="Datapack namespace/show id. Default: MIDI file name")
     parser.add_argument(
@@ -51,6 +52,19 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["auto", "compact", "wide", "huge"],
         default="auto",
         help="Vanilla noteblock_machine layout. auto chooses compact/wide/huge from MIDI content. Default: auto",
+    )
+    parser.add_argument(
+        "--stage-template",
+        choices=["pulse", "classic_line", "minimal"],
+        default="pulse",
+        help="Vanilla noteblock_machine stage template. pulse=default transient modules; classic_line=one-row machine; minimal=marker/particle-only. Default: pulse",
+    )
+
+    parser.add_argument(
+        "--module-hold-ticks",
+        type=int,
+        default=0,
+        help="Vanilla Pulse Stage module hold ticks. 0=auto; try 2-12 for custom pulse length. Default: 0",
     )
     parser.add_argument(
         "--soma-namespace",
@@ -128,13 +142,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-fx",
         choices=["auto", "none", "lightshow", "fireworks", "both"],
         default="auto",
-        help="Extra stage effects. auto=lightshow for Soma concert except low quality; fireworks uses particle bursts, not real firework entities. Default: auto",
+        help="FX layers. auto=lightshow for command-stage outputs except low quality; fireworks uses particle bursts, not real firework entities. Default: auto",
+    )
+    parser.add_argument(
+        "--fx-profile",
+        choices=["clean", "redstone", "concert", "magic"],
+        default="concert",
+        help="Visual style for Show FX. clean=subtle dust; redstone=electric sparks/warm dust; concert=colorful dust/end_rod accents; magic=purple dust/enchant/portal accents. Default: concert",
     )
     parser.add_argument(
         "--gain",
         type=float,
         default=1.0,
         help="Sound volume multiplier. Default: 1.0",
+    )
+
+    parser.add_argument(
+        "--fx-intensity",
+        type=float,
+        default=1.0,
+        help="Global Show FX intensity multiplier. 0.25=subtle, 1.0=default, 2.0=strong. Default: 1.0",
+    )
+    parser.add_argument(
+        "--fx-layers",
+        default="all",
+        help="Comma-separated FX layers: all, note,drum,bass,chord,beat,lead,fireworks,finale. Default: all",
     )
     parser.add_argument(
         "--max-notes-per-tick",
@@ -156,6 +188,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.gui:
+        from .gui import run_gui
+        return run_gui()
 
     if args.list_presets:
         print("Built-in midi2mc presets:")
@@ -251,6 +287,8 @@ def run_export_from_args(args: argparse.Namespace) -> int:
         sound_engine=args.sound_engine,
         stage_profile=args.stage_profile,
         stage_layout=args.stage_layout,
+        stage_template=getattr(args, "stage_template", "pulse"),
+        module_hold_ticks=max(0, int(getattr(args, "module_hold_ticks", 0) or 0)),
         soma_namespace=args.soma_namespace,
         soma_map=Path(args.soma_map) if args.soma_map else None,
         soma_reference_note=args.soma_reference_note,
@@ -262,6 +300,9 @@ def run_export_from_args(args: argparse.Namespace) -> int:
         stage_particles=stage_particles,
         piano_roll=piano_roll,
         show_fx=show_fx,
+        fx_profile=getattr(args, "fx_profile", "concert"),
+        fx_intensity=max(0.0, min(3.0, float(getattr(args, "fx_intensity", 1.0) or 1.0))),
+        fx_layers=str(getattr(args, "fx_layers", "all") or "all"),
         preset=getattr(args, "preset", None),
         html_report=not getattr(args, "no_report", False),
         zip_output=not args.no_zip,
@@ -283,7 +324,7 @@ def _print_parse_error(path: Path, exc: MidiParseError) -> None:
     print(f"  reason: {exc}", file=sys.stderr)
     print("  tips:", file=sys.stderr)
     print("    - 确认输入的是 .mid/.midi 标准 MIDI 文件，不是 mp3/wav/ogg。", file=sys.stderr)
-    print("    - 当前 v1.9.0 支持 PPQ/ticks-per-quarter MIDI，不支持 SMPTE division。", file=sys.stderr)
+    print("    - 当前 v3.0.0 支持 PPQ/ticks-per-quarter MIDI，不支持 SMPTE division。", file=sys.stderr)
     print("    - 可以先用 examples/demo_scale.mid 测试环境是否正常。", file=sys.stderr)
 
 
